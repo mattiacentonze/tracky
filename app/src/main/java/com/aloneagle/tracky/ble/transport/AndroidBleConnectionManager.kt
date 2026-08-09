@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
@@ -115,9 +116,23 @@ class AndroidBleConnectionManager @Inject constructor(
                 ),
             )
             readyContinuation = onReady
-            bluetoothGatt = runCatching {
-                device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
-            }.onFailure { throwable ->
+            val connectionAttempt: Result<BluetoothGatt?> = if (
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.BLUETOOTH_CONNECT,
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                Result.failure(missingConnectPermission("start a GATT connection"))
+            } else {
+                try {
+                    Result.success(device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE))
+                } catch (exception: SecurityException) {
+                    Result.failure(exception)
+                } catch (exception: RuntimeException) {
+                    Result.failure(exception)
+                }
+            }
+            bluetoothGatt = connectionAttempt.onFailure { throwable ->
                 connectionState.value = TrackerConnectionState.Failed
                 log(
                     BleLogEvent(
@@ -281,12 +296,25 @@ class AndroidBleConnectionManager @Inject constructor(
 
         override suspend fun discoverServices(): Result<List<GattServiceSummary>> = operationMutex.withLock {
             val gatt = bluetoothGatt ?: return Result.failure(IllegalStateException("No active connection"))
+            if (
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.BLUETOOTH_CONNECT,
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                return Result.failure(missingConnectPermission("discover GATT services"))
+            }
             connectionState.value = TrackerConnectionState.DiscoveringServices
             val deferred = CompletableDeferred<Result<List<GattServiceSummary>>>()
             pendingDiscovery = deferred
-            val started = runCatching { gatt.discoverServices() }.getOrElse {
+            val started = try {
+                gatt.discoverServices()
+            } catch (exception: SecurityException) {
                 pendingDiscovery = null
-                return Result.failure(it)
+                return Result.failure(exception)
+            } catch (exception: RuntimeException) {
+                pendingDiscovery = null
+                return Result.failure(exception)
             }
             if (!started) {
                 pendingDiscovery = null
@@ -304,6 +332,14 @@ class AndroidBleConnectionManager @Inject constructor(
             characteristicUuid: String,
         ): Result<ByteArray> = operationMutex.withLock {
             val gatt = bluetoothGatt ?: return Result.failure(IllegalStateException("No active connection"))
+            if (
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.BLUETOOTH_CONNECT,
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                return Result.failure(missingConnectPermission("read a GATT characteristic"))
+            }
             val characteristic = gatt.findCharacteristic(serviceUuid, characteristicUuid)
                 ?: return Result.failure(IllegalArgumentException("Characteristic $characteristicUuid not found"))
             val deferred = CompletableDeferred<Result<ByteArray>>()
@@ -321,9 +357,14 @@ class AndroidBleConnectionManager @Inject constructor(
                     characteristicUuid = characteristicUuid,
                 ),
             )
-            val started = runCatching { gatt.readCharacteristic(characteristic) }.getOrElse {
+            val started = try {
+                gatt.readCharacteristic(characteristic)
+            } catch (exception: SecurityException) {
                 pendingRead = null
-                return Result.failure(it)
+                return Result.failure(exception)
+            } catch (exception: RuntimeException) {
+                pendingRead = null
+                return Result.failure(exception)
             }
             if (!started) {
                 pendingRead = null
@@ -343,6 +384,14 @@ class AndroidBleConnectionManager @Inject constructor(
             writeType: Int?,
         ): Result<Unit> = operationMutex.withLock {
             val gatt = bluetoothGatt ?: return Result.failure(IllegalStateException("No active connection"))
+            if (
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.BLUETOOTH_CONNECT,
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                return Result.failure(missingConnectPermission("write a GATT characteristic"))
+            }
             val characteristic = gatt.findCharacteristic(serviceUuid, characteristicUuid)
                 ?: return Result.failure(IllegalArgumentException("Characteristic $characteristicUuid not found"))
             val effectiveWriteType = writeType ?: characteristic.preferredWriteType()
@@ -363,13 +412,13 @@ class AndroidBleConnectionManager @Inject constructor(
                     resultCode = effectiveWriteType,
                 ),
             )
-            val started = runCatching {
+            val started = try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     gatt.writeCharacteristic(
                         characteristic,
                         payload,
                         effectiveWriteType,
-                    ) == BluetoothGatt.GATT_SUCCESS
+                    ) == BluetoothStatusCodes.SUCCESS
                 } else {
                     @Suppress("DEPRECATION")
                     characteristic.value = payload
@@ -377,9 +426,12 @@ class AndroidBleConnectionManager @Inject constructor(
                     @Suppress("DEPRECATION")
                     gatt.writeCharacteristic(characteristic)
                 }
-            }.getOrElse {
+            } catch (exception: SecurityException) {
                 pendingWrite = null
-                return Result.failure(it)
+                return Result.failure(exception)
+            } catch (exception: RuntimeException) {
+                pendingWrite = null
+                return Result.failure(exception)
             }
             if (!started) {
                 pendingWrite = null
@@ -399,9 +451,54 @@ class AndroidBleConnectionManager @Inject constructor(
         fun disconnectSafely() {
             if (isClosed) return
             isClosed = true
-            runCatching { bluetoothGatt?.disconnect() }
-            runCatching { bluetoothGatt?.close() }
+            val gatt = bluetoothGatt
             bluetoothGatt = null
+            if (gatt == null) return
+            if (
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.BLUETOOTH_CONNECT,
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                handleGattCleanupFailure(
+                    operation = "disconnect",
+                    throwable = missingConnectPermission("disconnect and close the GATT connection"),
+                )
+                return
+            }
+            try {
+                gatt.disconnect()
+            } catch (exception: SecurityException) {
+                handleGattCleanupFailure("disconnect", exception)
+            } catch (exception: RuntimeException) {
+                handleGattCleanupFailure("disconnect", exception)
+            }
+            try {
+                gatt.close()
+            } catch (exception: SecurityException) {
+                handleGattCleanupFailure("close", exception)
+            } catch (exception: RuntimeException) {
+                handleGattCleanupFailure("close", exception)
+            }
+        }
+
+        private fun missingConnectPermission(operation: String): SecurityException = SecurityException(
+            "BLUETOOTH_CONNECT permission is required to $operation.",
+        )
+
+        private fun handleGattCleanupFailure(operation: String, throwable: Throwable) {
+            failPending(throwable)
+            log(
+                BleLogEvent(
+                    sessionId = sessionId,
+                    trackerId = deviceAddress,
+                    timestamp = System.currentTimeMillis(),
+                    category = BleLogEvent.Category.Connection,
+                    action = "${operation}_exception",
+                    message = throwable.message ?: "Failed to $operation the GATT connection.",
+                    deviceAddress = deviceAddress,
+                ),
+            )
         }
 
         private fun completeRead(characteristic: BluetoothGattCharacteristic, value: ByteArray, status: Int) {

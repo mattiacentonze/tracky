@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.IBinder
 import androidx.core.content.ContextCompat
 import com.aloneagle.tracky.notifications.TrackyNotifications
@@ -57,11 +58,23 @@ class TrackerMonitorService : android.app.Service() {
                 )
             }.collect { (activeTrackers, activeSearch, message) ->
                 val title = if (activeSearch != null) "Tracky search" else "Tracky monitor"
-                androidx.core.app.NotificationManagerCompat.from(this@TrackerMonitorService)
-                    .notify(
-                        TrackyNotifications.FOREGROUND_NOTIFICATION_ID,
-                        notifications.buildForegroundNotification(title, message),
-                    )
+                if (
+                    Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                    ContextCompat.checkSelfPermission(
+                        this@TrackerMonitorService,
+                        Manifest.permission.POST_NOTIFICATIONS,
+                    ) == PackageManager.PERMISSION_GRANTED
+                ) {
+                    try {
+                        androidx.core.app.NotificationManagerCompat.from(this@TrackerMonitorService)
+                            .notify(
+                                TrackyNotifications.FOREGROUND_NOTIFICATION_ID,
+                                notifications.buildForegroundNotification(title, message),
+                            )
+                    } catch (_: SecurityException) {
+                        // Permission may be revoked between the check and notification update.
+                    }
+                }
                 val isIdle = activeTrackers.isEmpty() && activeSearch == null
                 if (isIdle) {
                     scheduleIdleStop()

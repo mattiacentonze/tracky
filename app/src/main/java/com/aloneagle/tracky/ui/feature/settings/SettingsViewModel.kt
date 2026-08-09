@@ -66,7 +66,12 @@ fun SettingsScreen(viewModel: SettingsViewModel) {
         Manifest.permission.BLUETOOTH_SCAN,
         Manifest.permission.BLUETOOTH_CONNECT,
     ) }
-    val locationGranted = remember(permissionVersion) { context.hasAllPermissions(Manifest.permission.ACCESS_FINE_LOCATION) }
+    val locationGranted = remember(permissionVersion) {
+        context.hasAnyPermission(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        )
+    }
     val notificationsGranted = remember(permissionVersion) {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             context.hasAllPermissions(Manifest.permission.POST_NOTIFICATIONS)
@@ -96,6 +101,7 @@ fun SettingsScreen(viewModel: SettingsViewModel) {
                             arrayOf(
                                 Manifest.permission.BLUETOOTH_SCAN,
                                 Manifest.permission.BLUETOOTH_CONNECT,
+                                Manifest.permission.ACCESS_COARSE_LOCATION,
                                 Manifest.permission.ACCESS_FINE_LOCATION,
                                 Manifest.permission.POST_NOTIFICATIONS,
                             ),
@@ -137,6 +143,10 @@ private fun PermissionLine(label: String, granted: Boolean) {
 }
 
 private fun Context.hasAllPermissions(vararg permissions: String): Boolean = permissions.all { permission ->
+    ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+}
+
+private fun Context.hasAnyPermission(vararg permissions: String): Boolean = permissions.any { permission ->
     ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 }
 

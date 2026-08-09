@@ -1,15 +1,19 @@
 package com.aloneagle.tracky.automation
 
+import android.Manifest
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.RingtoneManager
 import android.net.Uri
+import android.os.Build
 import android.os.VibrationEffect
 import android.os.VibratorManager
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import com.aloneagle.tracky.R
 import com.aloneagle.tracky.domain.model.ProximityAutomationAction
 import com.aloneagle.tracky.domain.model.ProximityAutomationEvent
@@ -81,6 +85,15 @@ class AndroidAutomationActionExecutor @Inject constructor(
         actionIntent: Intent? = null,
     ): Result<Unit> {
         notifications.ensureChannels()
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return Result.failure(IllegalStateException("Notifications are disabled for Tracky."))
+        }
         if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
             return Result.failure(IllegalStateException("Notifications are disabled for Tracky."))
         }
@@ -104,8 +117,13 @@ class AndroidAutomationActionExecutor @Inject constructor(
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .apply { if (pendingIntent != null) setContentIntent(pendingIntent) }
             .build()
-        return runCatching {
+        return try {
             NotificationManagerCompat.from(context).notify(event.ruleId.hashCode(), notification)
+            Result.success(Unit)
+        } catch (securityException: SecurityException) {
+            Result.failure(securityException)
+        } catch (throwable: Throwable) {
+            Result.failure(throwable)
         }
     }
 

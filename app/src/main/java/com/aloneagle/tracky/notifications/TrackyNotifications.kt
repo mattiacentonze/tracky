@@ -1,13 +1,16 @@
 package com.aloneagle.tracky.notifications
 
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import com.aloneagle.tracky.MainActivity
 import com.aloneagle.tracky.R
 import com.aloneagle.tracky.domain.model.KnownTracker
@@ -54,18 +57,35 @@ class TrackyNotifications @Inject constructor(
         .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
         .build()
 
-    fun showOutOfRangeAlert(tracker: KnownTracker) {
-        NotificationManagerCompat.from(context).notify(
-            tracker.id.hashCode(),
-            NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
-                .setSmallIcon(R.drawable.ic_stat_tracky)
-                .setContentTitle("${tracker.displayName} out of range")
-                .setContentText("Tracky has not seen this tracker recently.")
-                .setContentIntent(mainActivityPendingIntent())
-                .setAutoCancel(true)
-                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-                .build(),
-        )
+    fun showOutOfRangeAlert(tracker: KnownTracker): Boolean {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) != PackageManager.PERMISSION_GRANTED
+        ) return false
+
+        val notificationManager = NotificationManagerCompat.from(context)
+        if (!notificationManager.areNotificationsEnabled()) return false
+
+        return try {
+            notificationManager.notify(
+                tracker.id.hashCode(),
+                NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_stat_tracky)
+                    .setContentTitle("${tracker.displayName} out of range")
+                    .setContentText("Tracky has not seen this tracker recently.")
+                    .setContentIntent(mainActivityPendingIntent())
+                    .setAutoCancel(true)
+                    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                    .build(),
+            )
+            true
+        } catch (_: SecurityException) {
+            // Permission may be revoked between the check and posting the alert.
+            false
+        }
     }
 
     private fun mainActivityPendingIntent(): PendingIntent {

@@ -268,7 +268,7 @@ class DefaultTrackerMonitorCoordinator @Inject constructor(
                 continue
             }
             if (monitorScannerHealthySince != healthySince) return
-            notifications.showOutOfRangeAlert(tracker)
+            if (!notifications.showOutOfRangeAlert(tracker)) continue
             trackerRepository.markOutOfRangeAlertSent(tracker.id, now)
             bleLogSink.log(
                 BleLogEvent(

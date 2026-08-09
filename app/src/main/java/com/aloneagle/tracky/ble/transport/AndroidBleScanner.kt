@@ -199,7 +199,20 @@ class AndroidBleScanner @Inject constructor(
 
         awaitClose {
             onScanHealthChanged(false)
-            runCatching { scanner.stopScan(callback) }
+            if (
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.BLUETOOTH_SCAN,
+                ) == PackageManager.PERMISSION_GRANTED
+            ) {
+                try {
+                    scanner.stopScan(callback)
+                } catch (_: SecurityException) {
+                    // Runtime permissions can be revoked while a scan is active.
+                } catch (_: RuntimeException) {
+                    // The adapter may turn off while the flow is closing.
+                }
+            }
             if (receiverRegistered) {
                 runCatching { context.unregisterReceiver(bluetoothStateReceiver) }
                 receiverRegistered = false
@@ -252,10 +265,24 @@ class AndroidBleScanner @Inject constructor(
                     }
                 }
             }
+        val resolvedName = if (
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_CONNECT,
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            try {
+                device.name
+            } catch (_: SecurityException) {
+                null
+            }
+        } else {
+            null
+        }
         return BleScanResult(
             deviceAddress = device.address.orEmpty(),
             advertisedName = scanRecord?.deviceName,
-            resolvedName = device.name,
+            resolvedName = resolvedName,
             manufacturerDataHex = manufacturerHex,
             serviceUuids = serviceUuids,
             rssi = rssi,

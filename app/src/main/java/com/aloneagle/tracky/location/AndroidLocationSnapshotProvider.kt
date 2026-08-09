@@ -12,6 +12,7 @@ import com.google.android.gms.tasks.CancellationTokenSource
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -25,19 +26,66 @@ class AndroidLocationSnapshotProvider @Inject constructor(
     @Volatile private var cachedSnapshot: LocationSnapshot? = null
 
     override suspend fun currentSnapshot(): LocationSnapshot? {
-        if (!hasFineLocationPermission()) return null
+        val hasLocationPermission =
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+            ) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                ) == PackageManager.PERMISSION_GRANTED
+        if (!hasLocationPermission) return null
         cachedSnapshot.takeIfFresh()?.let { return it }
         return snapshotMutex.withLock {
             cachedSnapshot.takeIfFresh()?.let { return@withLock it }
             val client = LocationServices.getFusedLocationProviderClient(context)
-            val currentLocation = withTimeoutOrNull(LOCATION_TIMEOUT_MILLIS) {
-                runCatching {
-                    val tokenSource = CancellationTokenSource()
-                    client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, tokenSource.token).await()
-                }.getOrNull()
+            val currentLocation = try {
+                val tokenSource = CancellationTokenSource()
+                try {
+                    withTimeoutOrNull(LOCATION_TIMEOUT_MILLIS) {
+                        val stillHasLocationPermission =
+                            ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.ACCESS_FINE_LOCATION,
+                            ) == PackageManager.PERMISSION_GRANTED ||
+                                ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                                ) == PackageManager.PERMISSION_GRANTED
+                        if (!stillHasLocationPermission) return@withTimeoutOrNull null
+                        client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, tokenSource.token).await()
+                    }
+                } finally {
+                    tokenSource.cancel()
+                }
+            } catch (_: SecurityException) {
+                null
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
             }
-            val location = currentLocation ?: withTimeoutOrNull(LOCATION_TIMEOUT_MILLIS) {
-                runCatching { client.lastLocation.await() }.getOrNull()
+            val location = currentLocation ?: try {
+                withTimeoutOrNull(LOCATION_TIMEOUT_MILLIS) {
+                    val stillHasLocationPermission =
+                        ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                        ) == PackageManager.PERMISSION_GRANTED ||
+                            ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.ACCESS_COARSE_LOCATION,
+                            ) == PackageManager.PERMISSION_GRANTED
+                    if (!stillHasLocationPermission) return@withTimeoutOrNull null
+                    client.lastLocation.await()
+                }
+            } catch (_: SecurityException) {
+                null
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
             }
             location?.takeIf { candidate ->
                 val age = System.currentTimeMillis() - candidate.time
@@ -58,11 +106,6 @@ class AndroidLocationSnapshotProvider @Inject constructor(
         val age = System.currentTimeMillis() - snapshot.observedAt
         return snapshot.takeIf { age in 0..LOCATION_CACHE_MILLIS }
     }
-
-    private fun hasFineLocationPermission(): Boolean = ContextCompat.checkSelfPermission(
-        context,
-        Manifest.permission.ACCESS_FINE_LOCATION,
-    ) == PackageManager.PERMISSION_GRANTED
 }
 
 private const val LOCATION_CACHE_MILLIS = 60_000L
