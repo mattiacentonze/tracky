@@ -13,6 +13,12 @@ val TrackyMuted = Color(0xFF687874)
 val TrackyAmber = Color(0xFFD18B18)
 val TrackyCoral = Color(0xFFC65B3C)
 
+// Semantic signal colors used by shared proximity and connection components.
+val SignalBlue = Color(0xFF3F6FA0)
+val SignalGreen = TrackyGreen
+val SignalAmber = TrackyAmber
+val SignalRed = TrackyCoral
+
 val NightBackground = Color(0xFF0D1715)
 val NightSurface = Color(0xFF152522)
 val NightSurfaceVariant = Color(0xFF20332F)
