@@ -1,0 +1,92 @@
+name: Android CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Test, lint, and build
+    # Pin the hosted image to avoid an unreviewed toolchain change when
+    # `ubuntu-latest` advances. This image includes Android SDK/API 36.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle and validate wrapper
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          validate-wrappers: true
+          cache-read-only: ${{ github.ref != format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Run unit tests, lint, and debug build
+        run: >-
+          ./gradlew
+          --no-daemon
+          --stacktrace
+          --continue
+          testDebugUnitTest
+          lintDebug
+          assembleDebug
+
+      - name: Verify APK signature and write checksum
+        shell: bash
+        run: |
+          shopt -s nullglob
+          apks=("$GITHUB_WORKSPACE"/app/build/outputs/apk/debug/*.apk)
+          test "${#apks[@]}" -eq 1
+          apk="${apks[0]}"
+          apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          test -x "$apksigner_path"
+          "$apksigner_path" verify --verbose --print-certs "$apk"
+          apk_dir="$(dirname "$apk")"
+          apk_name="$(basename "$apk")"
+          (cd "$apk_dir" && sha256sum "$apk_name" | tee "$apk_name.sha256")
+
+      - name: Upload debug APK
+        if: ${{ success() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tracky-debug-apk-${{ github.sha }}
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/debug/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload test and lint reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tracky-build-reports-${{ github.sha }}
+          path: |
+            app/build/reports/**
+            app/build/test-results/**
+            app/build/outputs/logs/**
+            app/schemas/**
+          if-no-files-found: warn
+          retention-days: 14
