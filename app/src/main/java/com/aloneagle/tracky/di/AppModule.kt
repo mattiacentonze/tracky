@@ -7,6 +7,7 @@ import com.aloneagle.tracky.ble.protocol.NutFindthingAdapter
 import com.aloneagle.tracky.ble.protocol.ProtocolRegistry
 import com.aloneagle.tracky.ble.transport.AndroidBleConnectionManager
 import com.aloneagle.tracky.ble.transport.AndroidBleScanner
+import com.aloneagle.tracky.ble.transport.AndroidBluetoothDeviceCatalog
 import com.aloneagle.tracky.automation.AndroidAutomationActionExecutor
 import com.aloneagle.tracky.data.local.TrackyDatabase
 import com.aloneagle.tracky.data.local.dao.AutomationRuleDao
@@ -20,6 +21,7 @@ import com.aloneagle.tracky.domain.repository.TrackerRepository
 import com.aloneagle.tracky.domain.repository.AutomationRepository
 import com.aloneagle.tracky.domain.service.AutomationActionExecutor
 import com.aloneagle.tracky.domain.service.BleConnectionManager
+import com.aloneagle.tracky.domain.service.BluetoothDeviceCatalog
 import com.aloneagle.tracky.domain.service.BleLogSink
 import com.aloneagle.tracky.domain.service.BleScanner
 import com.aloneagle.tracky.domain.service.LocationSnapshotProvider
@@ -65,6 +67,10 @@ abstract class BindingModule {
     @Binds
     @Singleton
     abstract fun bindBleScanner(impl: AndroidBleScanner): BleScanner
+
+    @Binds
+    @Singleton
+    abstract fun bindBluetoothDeviceCatalog(impl: AndroidBluetoothDeviceCatalog): BluetoothDeviceCatalog
 
     @Binds
     @Singleton

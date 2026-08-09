@@ -3,6 +3,7 @@ package com.aloneagle.tracky.domain.repository
 import com.aloneagle.tracky.domain.model.BleLogEvent
 import com.aloneagle.tracky.domain.model.BleScanResult
 import com.aloneagle.tracky.domain.model.KnownTracker
+import com.aloneagle.tracky.domain.model.PairedBluetoothDevice
 import com.aloneagle.tracky.domain.model.RingResult
 import com.aloneagle.tracky.domain.model.ScanSessionType
 import com.aloneagle.tracky.domain.model.TrackerObservation
@@ -14,6 +15,7 @@ interface TrackerRepository {
     fun observeRecentObservations(id: String, limit: Int = 30): Flow<List<TrackerObservation>>
     fun observeBleLogs(trackerId: String? = null, limit: Int = 500): Flow<List<BleLogEvent>>
     suspend fun upsertFromScan(scanResult: BleScanResult, sessionType: ScanSessionType): KnownTracker
+    suspend fun upsertPairedDevice(device: PairedBluetoothDevice): KnownTracker
     suspend fun renameTracker(id: String, nickname: String)
     suspend fun setMonitorEnabled(id: String, enabled: Boolean)
     suspend fun refreshTracker(id: String, sessionId: String): Result<KnownTracker>

@@ -9,13 +9,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import com.aloneagle.tracky.domain.service.BluetoothDeviceCatalog
+import com.aloneagle.tracky.domain.service.BluetoothRadioState
 import com.aloneagle.tracky.service.TrackerMonitorService
 import com.aloneagle.tracky.ui.navigation.TrackyNavHost
 import com.aloneagle.tracky.ui.theme.TrackyTheme
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    @Inject lateinit var bluetoothDeviceCatalog: BluetoothDeviceCatalog
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -37,6 +42,12 @@ class MainActivity : ComponentActivity() {
             this,
             Manifest.permission.BLUETOOTH_CONNECT,
         ) == PackageManager.PERMISSION_GRANTED
-        if (canScan && canConnect) TrackerMonitorService.syncMonitoring(this)
+        if (
+            canScan &&
+            canConnect &&
+            bluetoothDeviceCatalog.currentRadioState() == BluetoothRadioState.Enabled
+        ) {
+            TrackerMonitorService.syncMonitoring(this)
+        }
     }
 }

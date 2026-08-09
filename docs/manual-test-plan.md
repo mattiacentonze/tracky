@@ -50,21 +50,31 @@ An emulator result is not evidence that BLE distance, Finder trend, UWB directio
 
 ## Physical Device Setup
 
-1. Enable Bluetooth and unlock the phone.
-2. Grant nearby-device and notification permissions. Grant location only if last-seen phone location is being tested.
-3. Keep the phone off battery saver for the baseline run; test restricted battery behavior separately.
-4. Wake the trackers and place them at known positions.
-5. Start with sound at a safe level and review Do Not Disturb/vibration settings.
+1. Start with Bluetooth disabled and unlock the phone.
+2. Grant nearby-device permission, accept Android's Bluetooth enable dialog, and
+   confirm Tracky starts scanning without opening Settings. Deny it once as a
+   separate case and confirm Tracky shows a retry button without a prompt loop.
+3. Grant notification permission. Grant location only if last-seen phone location is being tested.
+4. Keep the phone off battery saver for the baseline run; test restricted battery behavior separately.
+5. Wake the trackers and place them at known positions.
+6. Start with sound at a safe level and review Do Not Disturb/vibration settings.
 
 ## Devices And Naming
 
 1. Open **Devices** and rescan.
-2. Confirm every advertising tracker appears; note that some devices legitimately expose no friendly name.
-3. Compare displayed addresses/names and RSSI updates with a trusted BLE scanner when possible.
-4. Save a device, assign a friendly name, leave the screen, and confirm the name remains after returning and after app restart.
-5. Stop the tracker's advertisements and confirm the saved card remains under the not-currently-seen heading without being counted as in range.
-6. Confirm `Details` opens stored metadata and `Find` opens Finder for a saved device, including from the not-currently-seen card.
-7. Confirm unknown or unsaved devices cannot accidentally open a saved device's Finder.
+2. Confirm Android-paired and Tracky-saved devices appear first under `YOUR DEVICES`,
+   including paired devices that are not currently broadcasting.
+3. Confirm remaining named broadcasts appear under `OTHER NAMED DEVICES`, and
+   broadcasts without a usable name appear under `UNNAMED DEVICES`.
+4. Switch between `Distance` and `Name`; confirm only the order inside each section
+   changes. For distance, live strongest signals lead and unavailable signals are last.
+5. Confirm a paired device with no current BLE broadcast says `No BLE signal` and
+   `Distance unavailable` rather than showing stored or fabricated proximity.
+6. Compare displayed addresses/names and RSSI updates with a trusted BLE scanner when possible.
+7. Save a device, assign a friendly name, leave the screen, and confirm the name remains after returning and after app restart.
+8. Stop the tracker's advertisements and confirm its card remains in `YOUR DEVICES` without a live distance.
+9. Confirm `Details` opens stored metadata and `Find` opens Finder for a saved or paired device.
+10. Confirm unknown or unsaved devices cannot accidentally open another device's Finder.
 
 ## Finder
 
@@ -73,9 +83,11 @@ An emulator result is not evidence that BLE distance, Finder trend, UWB directio
 3. Confirm the approximate range, proximity band, RSSI, and trend update without freezing or oscillating on every packet.
 4. Confirm the UI never claims compass direction or shows a direction arrow.
 5. Toggle sound and haptics independently; verify feedback can be disabled and does not run continuously.
-6. Background and return to Finder; confirm the visible foreground-service notification and resumed updates.
-7. Leave Finder; confirm enabled background monitoring resumes rather than starting a competing scan.
-8. Treat large metre errors as expected RSSI limitations, but record prolonged stale state, reversed trend, crashes, or failure to recover.
+6. Turn Bluetooth off while Finder is open; confirm Tracky stops the search, offers Android's
+   enable dialog, and resumes automatically after consent without opening Settings.
+7. Background and return to Finder; confirm the visible foreground-service notification and resumed updates.
+8. Leave Finder; confirm enabled background monitoring resumes rather than starting a competing scan.
+9. Treat large metre errors as expected RSSI limitations, but record prolonged stale state, reversed trend, crashes, or failure to recover.
 
 ## Automations
 

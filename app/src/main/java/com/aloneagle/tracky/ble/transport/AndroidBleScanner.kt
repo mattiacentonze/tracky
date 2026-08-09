@@ -62,15 +62,52 @@ class AndroidBleScanner @Inject constructor(
             close(BleScanException("BLUETOOTH_SCAN permission is missing."))
             return@callbackFlow
         }
+        if (
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_CONNECT,
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            onScanHealthChanged(false)
+            close(BleScanException("BLUETOOTH_CONNECT permission is missing."))
+            return@callbackFlow
+        }
         val adapter = bluetoothManager?.adapter
+        if (adapter == null) {
+            onScanHealthChanged(false)
+            close(BleScanException("Bluetooth is not supported on this phone."))
+            return@callbackFlow
+        }
+        val adapterEnabled = try {
+            adapter.isEnabled
+        } catch (securityException: SecurityException) {
+            onScanHealthChanged(false)
+            close(BleScanException("Unable to read Bluetooth state.", securityException))
+            return@callbackFlow
+        }
+        if (!adapterEnabled) {
+            onScanHealthChanged(false)
+            log(
+                BleLogEvent(
+                    sessionId = sessionId,
+                    trackerId = null,
+                    timestamp = System.currentTimeMillis(),
+                    category = BleLogEvent.Category.Scan,
+                    action = "bluetooth_disabled",
+                    message = "Bluetooth is turned off.",
+                ),
+            )
+            close(BleScanException("Bluetooth is turned off."))
+            return@callbackFlow
+        }
         val scanner = try {
-            if (adapter?.isEnabled == true) adapter.bluetoothLeScanner else null
+            adapter.bluetoothLeScanner
         } catch (securityException: SecurityException) {
             onScanHealthChanged(false)
             close(BleScanException("Unable to access the Bluetooth scanner.", securityException))
             return@callbackFlow
         }
-        if (adapter == null || scanner == null) {
+        if (scanner == null) {
             onScanHealthChanged(false)
             log(
                 BleLogEvent(
@@ -272,7 +309,8 @@ class AndroidBleScanner @Inject constructor(
             ) == PackageManager.PERMISSION_GRANTED
         ) {
             try {
-                device.name
+                device.alias?.takeIf(String::isNotBlank)
+                    ?: device.name?.takeIf(String::isNotBlank)
             } catch (_: SecurityException) {
                 null
             }
@@ -299,4 +337,5 @@ class AndroidBleScanner @Inject constructor(
         context,
         Manifest.permission.BLUETOOTH_SCAN,
     ) == PackageManager.PERMISSION_GRANTED
+
 }
