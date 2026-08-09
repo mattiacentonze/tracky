@@ -1,0 +1,396 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "681bf657b7e94d4aa9b6fbcea485d464",
+    "entities": [
+      {
+        "tableName": "known_trackers",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `deviceAddress` TEXT NOT NULL, `nickname` TEXT, `advertisedName` TEXT, `resolvedName` TEXT, `protocolType` TEXT NOT NULL, `capabilities` TEXT NOT NULL, `batteryPercent` INTEGER, `batteryStatus` TEXT NOT NULL, `batteryUpdatedAt` INTEGER, `lastSeenAt` INTEGER, `lastRssi` INTEGER, `smoothedRssi` REAL, `lastLatitude` REAL, `lastLongitude` REAL, `lastAccuracyMeters` REAL, `lastLocationAt` INTEGER, `presenceState` TEXT NOT NULL, `connectionState` TEXT NOT NULL, `monitorEnabled` INTEGER NOT NULL, `discoveredServices` TEXT NOT NULL, `manufacturerDataHex` TEXT, `isNutCandidate` INTEGER NOT NULL, `lastSessionType` TEXT, `lastOutOfRangeAlertAt` INTEGER, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceAddress",
+            "columnName": "deviceAddress",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "nickname",
+            "columnName": "nickname",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "advertisedName",
+            "columnName": "advertisedName",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "resolvedName",
+            "columnName": "resolvedName",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "protocolType",
+            "columnName": "protocolType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "capabilities",
+            "columnName": "capabilities",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "batteryPercent",
+            "columnName": "batteryPercent",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "batteryStatus",
+            "columnName": "batteryStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "batteryUpdatedAt",
+            "columnName": "batteryUpdatedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastSeenAt",
+            "columnName": "lastSeenAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastRssi",
+            "columnName": "lastRssi",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "smoothedRssi",
+            "columnName": "smoothedRssi",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "lastLatitude",
+            "columnName": "lastLatitude",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "lastLongitude",
+            "columnName": "lastLongitude",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "lastAccuracyMeters",
+            "columnName": "lastAccuracyMeters",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "lastLocationAt",
+            "columnName": "lastLocationAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "presenceState",
+            "columnName": "presenceState",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "connectionState",
+            "columnName": "connectionState",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "monitorEnabled",
+            "columnName": "monitorEnabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "discoveredServices",
+            "columnName": "discoveredServices",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "manufacturerDataHex",
+            "columnName": "manufacturerDataHex",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "isNutCandidate",
+            "columnName": "isNutCandidate",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastSessionType",
+            "columnName": "lastSessionType",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastOutOfRangeAlertAt",
+            "columnName": "lastOutOfRangeAlertAt",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "tracker_observations",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `trackerId` TEXT NOT NULL, `seenAt` INTEGER NOT NULL, `sessionType` TEXT NOT NULL, `rssi` INTEGER NOT NULL, `smoothedRssi` REAL, `advertisedName` TEXT, `resolvedName` TEXT, `proximityLevel` TEXT, `estimatedDistanceMeters` REAL, `signalPercent` INTEGER, `proximityTrend` TEXT, `proximityDescriptor` TEXT, `latitude` REAL, `longitude` REAL, `accuracyMeters` REAL, `locationObservedAt` INTEGER, `connected` INTEGER NOT NULL, `serviceUuids` TEXT NOT NULL, `batteryPercent` INTEGER)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "trackerId",
+            "columnName": "trackerId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seenAt",
+            "columnName": "seenAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionType",
+            "columnName": "sessionType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rssi",
+            "columnName": "rssi",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "smoothedRssi",
+            "columnName": "smoothedRssi",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "advertisedName",
+            "columnName": "advertisedName",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "resolvedName",
+            "columnName": "resolvedName",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "proximityLevel",
+            "columnName": "proximityLevel",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "estimatedDistanceMeters",
+            "columnName": "estimatedDistanceMeters",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "signalPercent",
+            "columnName": "signalPercent",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "proximityTrend",
+            "columnName": "proximityTrend",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "proximityDescriptor",
+            "columnName": "proximityDescriptor",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "latitude",
+            "columnName": "latitude",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "longitude",
+            "columnName": "longitude",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "accuracyMeters",
+            "columnName": "accuracyMeters",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "locationObservedAt",
+            "columnName": "locationObservedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "connected",
+            "columnName": "connected",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serviceUuids",
+            "columnName": "serviceUuids",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "batteryPercent",
+            "columnName": "batteryPercent",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_tracker_observations_trackerId_seenAt",
+            "unique": false,
+            "columnNames": [
+              "trackerId",
+              "seenAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_tracker_observations_trackerId_seenAt` ON `${TABLE_NAME}` (`trackerId`, `seenAt`)"
+          }
+        ]
+      },
+      {
+        "tableName": "ble_log_events",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `sessionId` TEXT NOT NULL, `trackerId` TEXT, `timestamp` INTEGER NOT NULL, `category` TEXT NOT NULL, `action` TEXT NOT NULL, `message` TEXT NOT NULL, `deviceAddress` TEXT, `serviceUuid` TEXT, `characteristicUuid` TEXT, `payloadHex` TEXT, `resultCode` INTEGER, `rssi` INTEGER)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionId",
+            "columnName": "sessionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "trackerId",
+            "columnName": "trackerId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "timestamp",
+            "columnName": "timestamp",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "category",
+            "columnName": "category",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "action",
+            "columnName": "action",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "message",
+            "columnName": "message",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceAddress",
+            "columnName": "deviceAddress",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "serviceUuid",
+            "columnName": "serviceUuid",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "characteristicUuid",
+            "columnName": "characteristicUuid",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "payloadHex",
+            "columnName": "payloadHex",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "resultCode",
+            "columnName": "resultCode",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "rssi",
+            "columnName": "rssi",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_ble_log_events_trackerId_timestamp",
+            "unique": false,
+            "columnNames": [
+              "trackerId",
+              "timestamp"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_ble_log_events_trackerId_timestamp` ON `${TABLE_NAME}` (`trackerId`, `timestamp`)"
+          },
+          {
+            "name": "index_ble_log_events_sessionId_timestamp",
+            "unique": false,
+            "columnNames": [
+              "sessionId",
+              "timestamp"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_ble_log_events_sessionId_timestamp` ON `${TABLE_NAME}` (`sessionId`, `timestamp`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '681bf657b7e94d4aa9b6fbcea485d464')"
+    ]
+  }
+}
