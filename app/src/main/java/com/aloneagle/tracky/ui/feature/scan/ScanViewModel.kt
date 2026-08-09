@@ -1,7 +1,11 @@
 package com.aloneagle.tracky.ui.feature.scan
 
 import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,6 +23,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -33,6 +39,8 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -42,7 +50,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,14 +70,19 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.aloneagle.tracky.domain.model.BleScanResult
 import com.aloneagle.tracky.domain.model.KnownTracker
+import com.aloneagle.tracky.domain.model.PairedBluetoothDevice
 import com.aloneagle.tracky.domain.model.ScanSessionType
 import com.aloneagle.tracky.domain.repository.TrackerRepository
+import com.aloneagle.tracky.domain.service.BluetoothDeviceCatalog
+import com.aloneagle.tracky.domain.service.BluetoothRadioState
 import com.aloneagle.tracky.domain.service.TrackerMonitorCoordinator
 import com.aloneagle.tracky.service.TrackerMonitorService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -76,47 +91,59 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-
-data class ScanCandidateUi(
-    val result: BleScanResult,
-    val savedTracker: KnownTracker?,
-)
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 data class ScanUiState(
     val isScanning: Boolean = false,
-    val devices: List<ScanCandidateUi> = emptyList(),
-    val savedNotSeen: List<KnownTracker> = emptyList(),
+    val radioState: BluetoothRadioState = BluetoothRadioState.PermissionRequired,
+    val sortOption: DeviceSortOption = DeviceSortOption.Distance,
+    val sections: ScanSections = ScanSections(),
 )
 
 @HiltViewModel
 class ScanViewModel @Inject constructor(
     private val monitorCoordinator: TrackerMonitorCoordinator,
     private val trackerRepository: TrackerRepository,
+    private val bluetoothDeviceCatalog: BluetoothDeviceCatalog,
 ) : ViewModel() {
     private val discovered = MutableStateFlow<Map<String, BleScanResult>>(emptyMap())
+    private val pairedDevices = MutableStateFlow<List<PairedBluetoothDevice>>(emptyList())
     private val scanning = MutableStateFlow(false)
+    private val radioState = MutableStateFlow(BluetoothRadioState.PermissionRequired)
+    private val sortOption = MutableStateFlow(DeviceSortOption.Distance)
     private val _addedTrackers = MutableSharedFlow<String>()
+    private val _findTrackers = MutableSharedFlow<String>()
     private val _messages = MutableSharedFlow<String>()
+    private val scanMutex = Mutex()
     private var scanJob: Job? = null
-    private var cleanupJob: Job? = null
 
     val addedTrackers = _addedTrackers
+    val findTrackers = _findTrackers
     val messages = _messages
+
+    private val scanPreferences = combine(radioState, sortOption) { state, selectedSort ->
+        state to selectedSort
+    }
 
     val uiState = combine(
         discovered,
         scanning,
         trackerRepository.observeKnownTrackers(),
-    ) { discoveredDevices, isScanning, knownTrackers ->
-        val knownById = knownTrackers.associateBy(KnownTracker::id)
+        pairedDevices,
+        scanPreferences,
+    ) { discoveredDevices, isScanning, knownTrackers, paired, preferences ->
+        val (currentRadioState, selectedSort) = preferences
         ScanUiState(
             isScanning = isScanning,
-            devices = discoveredDevices.values
-                .sortedWith(compareByDescending<BleScanResult> { it.rssi }.thenByDescending { it.seenAt })
-                .map { result -> ScanCandidateUi(result, knownById[result.deviceAddress]) },
-            savedNotSeen = knownTrackers
-                .filterNot { tracker -> discoveredDevices.containsKey(tracker.deviceAddress) }
-                .sortedBy { tracker -> tracker.displayName.lowercase() },
+            radioState = currentRadioState,
+            sortOption = selectedSort,
+            sections = buildScanSections(
+                discoveredDevices = discoveredDevices.values,
+                knownTrackers = knownTrackers,
+                pairedDevices = paired,
+                sortOption = selectedSort,
+            ),
         )
     }.stateIn(
         scope = viewModelScope,
@@ -124,50 +151,113 @@ class ScanViewModel @Inject constructor(
         initialValue = ScanUiState(),
     )
 
+    init {
+        refreshBluetoothEnvironment()
+    }
+
+    fun refreshBluetoothEnvironment() {
+        val previousState = radioState.value
+        val state = bluetoothDeviceCatalog.currentRadioState()
+        if (state == BluetoothRadioState.Enabled) {
+            if (previousState != BluetoothRadioState.Enabled) discovered.value = emptyMap()
+            pairedDevices.value = bluetoothDeviceCatalog.pairedDevices()
+        } else {
+            stopScanning()
+            discovered.value = emptyMap()
+            pairedDevices.value = emptyList()
+        }
+        radioState.value = state
+    }
+
+    fun setSortOption(option: DeviceSortOption) {
+        sortOption.value = option
+    }
+
     fun rescan() {
-        stopScanning()
-        scanning.value = true
-        discovered.value = emptyMap()
+        refreshBluetoothEnvironment()
+        if (radioState.value != BluetoothRadioState.Enabled) {
+            stopScanning()
+            return
+        }
+        val previousJob = scanJob
         val sessionId = "manual-${System.currentTimeMillis()}"
-        scanJob = viewModelScope.launch {
-            try {
-                monitorCoordinator.scanNearby(sessionId).collect { result ->
-                    discovered.update { current -> current + (result.deviceAddress to result) }
+        val nextJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            previousJob?.cancel()
+            scanMutex.withLock {
+                val ownerJob = currentCoroutineContext()[Job]
+                if (radioState.value != BluetoothRadioState.Enabled) {
+                    if (scanJob === ownerJob) {
+                        scanJob = null
+                        scanning.value = false
+                    }
+                    return@withLock
                 }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (throwable: Throwable) {
-                _messages.emit(throwable.message ?: "Unable to start Bluetooth scan.")
-            } finally {
-                scanning.value = false
+                scanning.value = true
+                discovered.value = emptyMap()
+                val expiryJob = launch {
+                    while (true) {
+                        delay(DEVICE_EXPIRY_CHECK_MILLIS)
+                        val cutoff = System.currentTimeMillis() - DEVICE_EXPIRY_MILLIS
+                        discovered.update { devices ->
+                            devices.filterValues { result -> result.seenAt >= cutoff }
+                        }
+                    }
+                }
+                try {
+                    monitorCoordinator.scanNearby(sessionId).collect { result ->
+                        discovered.update { current -> current + (result.deviceAddress to result) }
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (throwable: Throwable) {
+                    _messages.emit(throwable.message ?: "Unable to start Bluetooth scan.")
+                } finally {
+                    expiryJob.cancel()
+                    if (scanJob === ownerJob) {
+                        scanJob = null
+                        scanning.value = false
+                    }
+                }
             }
         }
-        cleanupJob = viewModelScope.launch {
-            while (true) {
-                delay(DEVICE_EXPIRY_CHECK_MILLIS)
-                val cutoff = System.currentTimeMillis() - DEVICE_EXPIRY_MILLIS
-                discovered.update { devices ->
-                    devices.filterValues { result -> result.seenAt >= cutoff }
-                }
-            }
-        }
+        scanJob = nextJob
+        nextJob.start()
     }
 
     fun stopScanning() {
-        scanJob?.cancel()
+        val activeJob = scanJob
         scanJob = null
-        cleanupJob?.cancel()
-        cleanupJob = null
+        activeJob?.cancel()
         scanning.value = false
     }
 
     fun addTracker(deviceAddress: String) {
-        val result = discovered.value[deviceAddress] ?: return
         viewModelScope.launch {
-            val saved = trackerRepository.upsertFromScan(result, ScanSessionType.Manual)
+            val saved = ensureTracker(deviceAddress) ?: return@launch
             _messages.emit("Saved ${saved.displayName}")
             _addedTrackers.emit(saved.id)
         }
+    }
+
+    fun findDevice(deviceAddress: String) {
+        viewModelScope.launch {
+            val saved = ensureTracker(deviceAddress) ?: return@launch
+            _findTrackers.emit(saved.id)
+        }
+    }
+
+    private suspend fun ensureTracker(deviceAddress: String): KnownTracker? {
+        val result = discovered.value.values.firstOrNull {
+            scanResult -> scanResult.deviceAddress.equals(deviceAddress, ignoreCase = true)
+        }
+        if (result != null) return trackerRepository.upsertFromScan(result, ScanSessionType.Manual)
+        val paired = pairedDevices.value.firstOrNull {
+            device -> device.deviceAddress.equals(deviceAddress, ignoreCase = true)
+        }
+        if (paired != null) return trackerRepository.upsertPairedDevice(paired)
+        return uiState.value.sections.yourDevices.firstOrNull { candidate ->
+            candidate.deviceAddress.equals(deviceAddress, ignoreCase = true)
+        }?.savedTracker
     }
 }
 
@@ -182,25 +272,88 @@ fun ScanScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var permissionStateVersion by remember { mutableIntStateOf(0) }
+    var enableRequestAttempted by rememberSaveable { mutableStateOf(false) }
     val blePermissionsGranted = remember(permissionStateVersion) { context.hasBlePermissions() }
-    val launcher = rememberLauncherForActivityResult(
+    val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) { permissionStateVersion++ }
+    ) {
+        permissionStateVersion++
+        viewModel.refreshBluetoothEnvironment()
+    }
+    val enableBluetoothLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        viewModel.refreshBluetoothEnvironment()
+    }
+    val requestBluetoothEnable = {
+        if (
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_CONNECT,
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            enableRequestAttempted = true
+            runCatching {
+                enableBluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+            }
+        }
+    }
+    val scanReady = blePermissionsGranted && uiState.radioState == BluetoothRadioState.Enabled
 
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner, blePermissionsGranted) {
+    androidx.compose.runtime.DisposableEffect(context, blePermissionsGranted) {
+        if (blePermissionsGranted) {
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(receiverContext: Context?, intent: Intent?) {
+                    when (intent?.action) {
+                        BluetoothAdapter.ACTION_STATE_CHANGED -> viewModel.refreshBluetoothEnvironment()
+                    }
+                }
+            }
+            val filter = IntentFilter().apply {
+                addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+            }
+            ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
+            onDispose { runCatching { context.unregisterReceiver(receiver) } }
+        } else {
+            onDispose { }
+        }
+    }
+    LaunchedEffect(blePermissionsGranted, uiState.radioState) {
+        if (uiState.radioState == BluetoothRadioState.Enabled) {
+            enableRequestAttempted = false
+        }
+        if (blePermissionsGranted && uiState.radioState == BluetoothRadioState.PermissionRequired) {
+            viewModel.refreshBluetoothEnvironment()
+        }
+        if (
+            blePermissionsGranted &&
+            uiState.radioState == BluetoothRadioState.Disabled &&
+            !enableRequestAttempted
+        ) {
+            requestBluetoothEnable()
+        }
+    }
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner, scanReady) {
         val lifecycle = lifecycleOwner.lifecycle
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> if (blePermissionsGranted) {
-                    TrackerMonitorService.syncMonitoring(context)
-                    viewModel.rescan()
+                Lifecycle.Event.ON_START -> {
+                    permissionStateVersion++
+                    viewModel.refreshBluetoothEnvironment()
+                    if (scanReady) {
+                        TrackerMonitorService.syncMonitoring(context)
+                        viewModel.rescan()
+                    }
                 }
                 Lifecycle.Event.ON_STOP -> viewModel.stopScanning()
                 else -> Unit
             }
         }
         lifecycle.addObserver(observer)
-        if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) && blePermissionsGranted) {
+        if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            viewModel.refreshBluetoothEnvironment()
+        }
+        if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) && scanReady) {
             TrackerMonitorService.syncMonitoring(context)
             viewModel.rescan()
         }
@@ -215,6 +368,9 @@ fun ScanScreen(
     LaunchedEffect(Unit) {
         viewModel.addedTrackers.collect(onOpenTracker)
     }
+    LaunchedEffect(Unit) {
+        viewModel.findTrackers.collect(onFindTracker)
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -222,13 +378,21 @@ fun ScanScreen(
     ) {
         NearbyHeader(
             isScanning = uiState.isScanning,
-            deviceCount = uiState.devices.size,
-            onRefresh = { if (blePermissionsGranted) viewModel.rescan() },
+            deviceCount = uiState.sections.totalDeviceCount,
+            sortOption = uiState.sortOption,
+            onSortChanged = viewModel::setSortOption,
+            onRefresh = {
+                when (uiState.radioState) {
+                    BluetoothRadioState.Enabled -> viewModel.rescan()
+                    BluetoothRadioState.Disabled -> requestBluetoothEnable()
+                    else -> Unit
+                }
+            },
         )
         if (!blePermissionsGranted) {
             PermissionExplanation(
                 onRequestPermissions = {
-                    launcher.launch(
+                    permissionLauncher.launch(
                         arrayOf(
                             Manifest.permission.BLUETOOTH_SCAN,
                             Manifest.permission.BLUETOOTH_CONNECT,
@@ -236,59 +400,40 @@ fun ScanScreen(
                     )
                 },
             )
-        } else {
+        } else if (uiState.radioState == BluetoothRadioState.Disabled) {
+            BluetoothDisabledState(onEnableBluetooth = requestBluetoothEnable)
+        } else if (uiState.radioState == BluetoothRadioState.Unsupported) {
+            BluetoothUnsupportedState()
+        } else if (uiState.radioState == BluetoothRadioState.Enabled) {
             androidx.compose.foundation.lazy.LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(9.dp),
             ) {
-                if (uiState.devices.isEmpty()) {
+                if (uiState.sections.totalDeviceCount == 0) {
                     item { EmptyScanState(isScanning = uiState.isScanning) }
-                } else {
-                    item {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 5.dp, bottom = 3.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Text("SIGNAL STRENGTH", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("CURRENT", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                    items(
-                        count = uiState.devices.size,
-                        key = { index -> uiState.devices[index].result.deviceAddress },
-                    ) { index ->
-                        DeviceCard(
-                            candidate = uiState.devices[index],
-                            onSave = { viewModel.addTracker(uiState.devices[index].result.deviceAddress) },
-                            onDetails = { uiState.devices[index].savedTracker?.id?.let(onOpenTracker) },
-                            onFind = { uiState.devices[index].savedTracker?.id?.let(onFindTracker) },
-                        )
-                    }
                 }
-                if (uiState.savedNotSeen.isNotEmpty()) {
-                    item {
-                        Text(
-                            "SAVED · NOT CURRENTLY SEEN",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 9.dp, bottom = 3.dp),
-                        )
-                    }
-                    items(
-                        count = uiState.savedNotSeen.size,
-                        key = { index -> "saved-${uiState.savedNotSeen[index].id}" },
-                    ) { index ->
-                        val saved = uiState.savedNotSeen[index]
-                        SavedDeviceCard(
-                            tracker = saved,
-                            onFind = { onFindTracker(saved.id) },
-                            onDetails = { onOpenTracker(saved.id) },
-                        )
-                    }
-                }
+                deviceSection(
+                    title = "YOUR DEVICES",
+                    devices = uiState.sections.yourDevices,
+                    onSave = viewModel::addTracker,
+                    onDetails = onOpenTracker,
+                    onFind = viewModel::findDevice,
+                )
+                deviceSection(
+                    title = "OTHER NAMED DEVICES",
+                    devices = uiState.sections.namedNearby,
+                    onSave = viewModel::addTracker,
+                    onDetails = onOpenTracker,
+                    onFind = viewModel::findDevice,
+                )
+                deviceSection(
+                    title = "UNNAMED DEVICES",
+                    devices = uiState.sections.unnamedNearby,
+                    onSave = viewModel::addTracker,
+                    onDetails = onOpenTracker,
+                    onFind = viewModel::findDevice,
+                )
                 item {
                     Row(
                         modifier = Modifier
@@ -309,60 +454,20 @@ fun ScanScreen(
                     }
                 }
             }
+        } else {
+            BluetoothCheckingState()
         }
     }
 }
 
 @Composable
-private fun SavedDeviceCard(
-    tracker: KnownTracker,
-    onFind: () -> Unit,
-    onDetails: () -> Unit,
+private fun NearbyHeader(
+    isScanning: Boolean,
+    deviceCount: Int,
+    sortOption: DeviceSortOption,
+    onSortChanged: (DeviceSortOption) -> Unit,
+    onRefresh: () -> Unit,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Outlined.Bluetooth,
-                        contentDescription = null,
-                        modifier = Modifier.size(19.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Spacer(Modifier.width(11.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(tracker.displayName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        tracker.advertisedName?.takeUnless { it == tracker.displayName } ?: tracker.deviceAddress,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text("Waiting for a Bluetooth broadcast", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                }
-            }
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(onClick = onFind, modifier = Modifier.weight(1f)) { Text("Find") }
-                OutlinedButton(onClick = onDetails, modifier = Modifier.weight(1f)) { Text("Details") }
-            }
-        }
-    }
-}
-
-@Composable
-private fun NearbyHeader(isScanning: Boolean, deviceCount: Int, onRefresh: () -> Unit) {
     Column(modifier = Modifier.padding(start = 20.dp, end = 14.dp, top = 22.dp, bottom = 16.dp)) {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
@@ -396,14 +501,64 @@ private fun NearbyHeader(isScanning: Boolean, deviceCount: Int, onRefresh: () ->
                 Icon(Icons.AutoMirrored.Outlined.BluetoothSearching, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             }
             Column {
-                Text("$deviceCount ${if (deviceCount == 1) "device" else "devices"} in range", fontWeight = FontWeight.SemiBold)
+                Text("$deviceCount ${if (deviceCount == 1) "device" else "devices"} listed", fontWeight = FontWeight.SemiBold)
                 Text(
-                    if (isScanning) "Scanning nearby broadcasts" else "Tap refresh to scan again",
+                    if (isScanning) "Scanning nearby broadcasts" else "Paired devices stay visible without a signal",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
             }
         }
+        Spacer(Modifier.height(10.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("SORT BY", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            DeviceSortOption.entries.forEach { option ->
+                FilterChip(
+                    selected = sortOption == option,
+                    onClick = { onSortChanged(option) },
+                    label = { Text(option.name) },
+                )
+            }
+        }
+    }
+}
+
+private fun LazyListScope.deviceSection(
+    title: String,
+    devices: List<ScanCandidateUi>,
+    onSave: (String) -> Unit,
+    onDetails: (String) -> Unit,
+    onFind: (String) -> Unit,
+) {
+    if (devices.isEmpty()) return
+    item(key = "header-$title") {
+        Column(modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(title, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(devices.size.toString(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Spacer(Modifier.height(7.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        }
+    }
+    items(
+        items = devices,
+        key = { candidate -> "$title-${candidate.deviceAddress}" },
+    ) { candidate ->
+        DeviceCard(
+            candidate = candidate,
+            onSave = { onSave(candidate.deviceAddress) },
+            onDetails = { candidate.savedTracker?.id?.let(onDetails) },
+            onFind = { onFind(candidate.deviceAddress) },
+        )
     }
 }
 
@@ -416,59 +571,87 @@ private fun DeviceCard(
 ) {
     val result = candidate.result
     val tracker = candidate.savedTracker
-    val displayName = tracker?.displayName
-        ?: result.resolvedName
-        ?: result.advertisedName
-        ?: "Unknown device"
-    val secondaryName = result.advertisedName
-        ?.takeUnless { it == displayName }
-        ?: result.resolvedName?.takeUnless { it == displayName }
-        ?: result.deviceAddress
-    val proximity = rawProximity(result.rssi)
+    val canFind = candidate.isSaved || candidate.isPaired
+    val proximity = result?.let { scanResult -> rawProximity(scanResult.rssi) }
     ElevatedCard(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = tracker != null, onClick = onFind),
+            .clickable(enabled = canFind, onClick = onFind),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                SignalBadge(result.rssi)
+                if (result != null) SignalBadge(result.rssi) else NoSignalBadge()
                 Spacer(Modifier.width(11.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(displayName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(secondaryName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(candidate.displayName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(candidate.deviceAddress, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(
                         buildString {
-                            append(if (result.connectable) "Connectable" else "Bluetooth LE")
-                            if (tracker != null) append(" · Saved")
+                            if (candidate.isPaired) append("Paired")
+                            if (candidate.isSaved) {
+                                if (isNotEmpty()) append(" · ")
+                                append("Saved")
+                            }
+                            if (result != null) {
+                                if (isNotEmpty()) append(" · ")
+                                append(if (result.connectable) "Connectable" else "Bluetooth LE")
+                            } else {
+                                if (isNotEmpty()) append(" · ")
+                                append("No BLE signal")
+                            }
                         },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (result == null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 Column(horizontalAlignment = Alignment.End) {
-                    Text(proximity.first, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
-                    Text(proximity.second, style = MaterialTheme.typography.labelSmall, color = proximity.third)
+                    Text(proximity?.first ?: "No signal", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        proximity?.second ?: "Distance unavailable",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = proximity?.third ?: MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                if (tracker != null) {
+                if (canFind) {
                     Spacer(Modifier.width(3.dp))
                     Icon(Icons.Outlined.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            if (tracker == null) {
+            if (!canFind) {
                 Spacer(Modifier.height(10.dp))
                 OutlinedButton(onClick = onSave, modifier = Modifier.fillMaxWidth()) { Text("Save and rename") }
             } else {
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilledTonalButton(onClick = onFind, modifier = Modifier.weight(1f)) { Text("Find") }
-                    OutlinedButton(onClick = onDetails, modifier = Modifier.weight(1f)) { Text("Details") }
+                    if (tracker != null) {
+                        OutlinedButton(onClick = onDetails, modifier = Modifier.weight(1f)) { Text("Details") }
+                    } else if (candidate.isPaired) {
+                        OutlinedButton(onClick = onSave, modifier = Modifier.weight(1f)) { Text("Rename") }
+                    }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun NoSignalBadge() {
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Outlined.Bluetooth,
+            contentDescription = null,
+            modifier = Modifier.size(19.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -511,6 +694,53 @@ private fun EmptyScanState(isScanning: Boolean) {
             Text(if (isScanning) "Listening for devices…" else "No devices found", style = MaterialTheme.typography.titleMedium)
             Text("Keep this screen open and move closer.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+    }
+}
+
+@Composable
+private fun BluetoothDisabledState(onEnableBluetooth: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp),
+        verticalArrangement = Arrangement.Center,
+    ) {
+        ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+            Column(modifier = Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Icon(Icons.Outlined.Bluetooth, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Text("Bluetooth is off", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Allow Android to turn on Bluetooth. Tracky will load your paired devices and start scanning automatically.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Button(onClick = onEnableBluetooth, modifier = Modifier.fillMaxWidth()) { Text("Turn on Bluetooth") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BluetoothUnsupportedState() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp),
+        verticalArrangement = Arrangement.Center,
+    ) {
+        ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+            Column(modifier = Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Icon(Icons.Outlined.Bluetooth, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                Text("Bluetooth unavailable", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text("This phone does not expose a Bluetooth adapter that Tracky can use.")
+            }
+        }
+    }
+}
+
+@Composable
+private fun BluetoothCheckingState() {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        CircularProgressIndicator()
     }
 }
 

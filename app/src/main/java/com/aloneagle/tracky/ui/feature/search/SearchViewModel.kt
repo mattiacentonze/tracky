@@ -1,7 +1,11 @@
 package com.aloneagle.tracky.ui.feature.search
 
 import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.media.ToneGenerator
@@ -79,6 +83,8 @@ import com.aloneagle.tracky.domain.model.KnownTracker
 import com.aloneagle.tracky.domain.model.ProximityEstimate
 import com.aloneagle.tracky.domain.model.TrackerObservation
 import com.aloneagle.tracky.domain.repository.TrackerRepository
+import com.aloneagle.tracky.domain.service.BluetoothDeviceCatalog
+import com.aloneagle.tracky.domain.service.BluetoothRadioState
 import com.aloneagle.tracky.domain.service.TrackerMonitorCoordinator
 import com.aloneagle.tracky.service.TrackerMonitorService
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -96,6 +102,7 @@ data class SearchUiState(
     val observation: TrackerObservation? = null,
     val isRinging: Boolean = false,
     val isRefreshing: Boolean = false,
+    val radioState: BluetoothRadioState = BluetoothRadioState.PermissionRequired,
 )
 
 @HiltViewModel
@@ -104,10 +111,12 @@ class SearchViewModel @Inject constructor(
     trackerRepository: TrackerRepository,
     monitorCoordinator: TrackerMonitorCoordinator,
     private val repository: TrackerRepository,
+    private val bluetoothDeviceCatalog: BluetoothDeviceCatalog,
 ) : ViewModel() {
     val trackerId: String = checkNotNull(savedStateHandle["trackerId"])
     private val ringing = MutableStateFlow(false)
     private val refreshing = MutableStateFlow(false)
+    private val radioState = MutableStateFlow(BluetoothRadioState.PermissionRequired)
     private val _messages = MutableSharedFlow<String>()
 
     val messages = _messages
@@ -116,13 +125,22 @@ class SearchViewModel @Inject constructor(
         monitorCoordinator.observeRealtimeObservation(trackerId),
         ringing,
         refreshing,
-    ) { tracker, observation, isRinging, isRefreshing ->
-        SearchUiState(tracker, observation, isRinging, isRefreshing)
+        radioState,
+    ) { tracker, observation, isRinging, isRefreshing, currentRadioState ->
+        SearchUiState(tracker, observation, isRinging, isRefreshing, currentRadioState)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000L),
         initialValue = SearchUiState(),
     )
+
+    init {
+        refreshBluetoothState()
+    }
+
+    fun refreshBluetoothState() {
+        radioState.value = bluetoothDeviceCatalog.currentRadioState()
+    }
 
     fun rename(name: String) {
         viewModelScope.launch {
@@ -165,6 +183,7 @@ fun SearchScreen(
     val hapticFeedback = LocalHapticFeedback.current
     var soundEnabled by rememberSaveable { mutableStateOf(false) }
     var hapticsEnabled by rememberSaveable { mutableStateOf(true) }
+    var enableRequestAttempted by rememberSaveable { mutableStateOf(false) }
     var renameOpen by remember { mutableStateOf(false) }
     var draftName by remember(tracker?.id, tracker?.nickname) { mutableStateOf(tracker?.displayName.orEmpty()) }
     var permissionStateVersion by remember { mutableIntStateOf(0) }
@@ -172,9 +191,67 @@ fun SearchScreen(
     val blePermissionsGranted = remember(permissionStateVersion) { context.hasBlePermissions() }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) { permissionStateVersion++ }
+    ) {
+        permissionStateVersion++
+        viewModel.refreshBluetoothState()
+    }
+    val enableBluetoothLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        viewModel.refreshBluetoothState()
+    }
+    val requestBluetoothEnable = {
+        if (
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_CONNECT,
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            enableRequestAttempted = true
+            runCatching {
+                enableBluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+            }
+        }
+    }
+    val finderReady = blePermissionsGranted && uiState.radioState == BluetoothRadioState.Enabled
     val tone = remember { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 38) }
     DisposableEffect(tone) { onDispose { tone.release() } }
+
+    DisposableEffect(context, blePermissionsGranted) {
+        if (blePermissionsGranted) {
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(receiverContext: Context?, intent: Intent?) {
+                    if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                        viewModel.refreshBluetoothState()
+                    }
+                }
+            }
+            ContextCompat.registerReceiver(
+                context,
+                receiver,
+                IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+                ContextCompat.RECEIVER_EXPORTED,
+            )
+            onDispose { runCatching { context.unregisterReceiver(receiver) } }
+        } else {
+            onDispose { }
+        }
+    }
+    LaunchedEffect(blePermissionsGranted, uiState.radioState) {
+        if (uiState.radioState == BluetoothRadioState.Enabled) {
+            enableRequestAttempted = false
+        }
+        if (blePermissionsGranted && uiState.radioState == BluetoothRadioState.PermissionRequired) {
+            viewModel.refreshBluetoothState()
+        }
+        if (
+            blePermissionsGranted &&
+            uiState.radioState == BluetoothRadioState.Disabled &&
+            !enableRequestAttempted
+        ) {
+            requestBluetoothEnable()
+        }
+    }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -197,11 +274,11 @@ fun SearchScreen(
     LaunchedEffect(Unit) {
         viewModel.messages.collect { message -> snackbarHostState.showSnackbar(message) }
     }
-    DisposableEffect(lifecycleOwner, blePermissionsGranted, viewModel.trackerId) {
+    DisposableEffect(lifecycleOwner, finderReady, viewModel.trackerId) {
         val lifecycle = lifecycleOwner.lifecycle
         var started = false
         fun startFinder() {
-            if (!started && blePermissionsGranted) {
+            if (!started && finderReady) {
                 started = TrackerMonitorService.startSearch(context, viewModel.trackerId)
             }
         }
@@ -211,7 +288,11 @@ fun SearchScreen(
         }
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> startFinder()
+                Lifecycle.Event.ON_START -> {
+                    permissionStateVersion++
+                    viewModel.refreshBluetoothState()
+                    startFinder()
+                }
                 Lifecycle.Event.ON_STOP -> stopFinder()
                 else -> Unit
             }
@@ -245,7 +326,21 @@ fun SearchScreen(
                     permissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT))
                 },
             )
-        } else {
+        } else if (uiState.radioState == BluetoothRadioState.Disabled) {
+            FinderBluetoothState(
+                modifier = Modifier.padding(innerPadding),
+                title = "Bluetooth is off",
+                message = "Allow Android to turn on Bluetooth. Tracky will resume finding this device automatically.",
+                actionLabel = "Turn on Bluetooth",
+                onAction = requestBluetoothEnable,
+            )
+        } else if (uiState.radioState == BluetoothRadioState.Unsupported) {
+            FinderBluetoothState(
+                modifier = Modifier.padding(innerPadding),
+                title = "Bluetooth unavailable",
+                message = "This phone does not expose a Bluetooth adapter that Tracky can use.",
+            )
+        } else if (uiState.radioState == BluetoothRadioState.Enabled) {
             androidx.compose.foundation.lazy.LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
@@ -254,8 +349,30 @@ fun SearchScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 item { ProximityHero(estimate = estimate, rssi = liveObservation?.rssi) }
-                item {
-                    SignalHistory(signalPercent = estimate?.signalPercent ?: 0)
+                if (liveObservation == null) {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(15.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .padding(14.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            Icon(Icons.Outlined.Info, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text(
+                                "Waiting for a compatible BLE broadcast. Some paired Bluetooth accessories can be listed but cannot provide a live distance.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                if (liveObservation != null) {
+                    item {
+                        SignalHistory(signalPercent = estimate?.signalPercent ?: 0)
+                    }
                 }
                 item {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -313,6 +430,12 @@ fun SearchScreen(
                     }
                 }
             }
+        } else {
+            FinderBluetoothState(
+                modifier = Modifier.padding(innerPadding),
+                title = "Checking Bluetooth…",
+                message = "Tracky is waiting for Android's Bluetooth state.",
+            )
         }
     }
 
@@ -447,6 +570,28 @@ private fun PermissionRequired(modifier: Modifier, onGrant: () -> Unit) {
                 Text("Bluetooth access required", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                 Text("Finding compares live Bluetooth signal readings from the selected device.")
                 Button(onClick = onGrant, modifier = Modifier.fillMaxWidth()) { Text("Continue") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FinderBluetoothState(
+    modifier: Modifier,
+    title: String,
+    message: String,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
+    Column(modifier = modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
+        Card(shape = RoundedCornerShape(22.dp)) {
+            Column(modifier = Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Icon(Icons.Outlined.Bluetooth, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text(message)
+                if (actionLabel != null && onAction != null) {
+                    Button(onClick = onAction, modifier = Modifier.fillMaxWidth()) { Text(actionLabel) }
+                }
             }
         }
     }

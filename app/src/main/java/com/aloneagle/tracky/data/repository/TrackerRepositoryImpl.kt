@@ -12,6 +12,7 @@ import com.aloneagle.tracky.domain.model.BleLogEvent
 import com.aloneagle.tracky.domain.model.BleScanResult
 import com.aloneagle.tracky.domain.model.GattCharacteristicSummary
 import com.aloneagle.tracky.domain.model.KnownTracker
+import com.aloneagle.tracky.domain.model.PairedBluetoothDevice
 import com.aloneagle.tracky.domain.model.RingResult
 import com.aloneagle.tracky.domain.model.TrackerCapability
 import com.aloneagle.tracky.domain.model.ScanSessionType
@@ -154,6 +155,41 @@ class TrackerRepositoryImpl @Inject constructor(
             // distance and trend before the live finder receives the value.
             entity.toDomain().copy(proximity = estimate)
         }
+
+    override suspend fun upsertPairedDevice(device: PairedBluetoothDevice): KnownTracker = withContext(ioDispatcher) {
+        val existing = knownTrackerDao.getById(device.deviceAddress)
+        val entity = existing?.copy(
+            resolvedName = device.systemName ?: existing.resolvedName,
+        ) ?: KnownTrackerEntity(
+            id = device.deviceAddress,
+            deviceAddress = device.deviceAddress,
+            nickname = null,
+            advertisedName = null,
+            resolvedName = device.systemName,
+            protocolType = com.aloneagle.tracky.domain.model.TrackerProtocolType.GenericBle.name,
+            capabilities = emptyList(),
+            batteryPercent = null,
+            batteryStatus = BatteryState.Status.Unknown.name,
+            batteryUpdatedAt = null,
+            lastSeenAt = null,
+            lastRssi = null,
+            smoothedRssi = null,
+            lastLatitude = null,
+            lastLongitude = null,
+            lastAccuracyMeters = null,
+            lastLocationAt = null,
+            presenceState = TrackerPresence.NotRecent.name,
+            connectionState = TrackerConnectionState.Disconnected.name,
+            monitorEnabled = false,
+            discoveredServices = emptyList(),
+            manufacturerDataHex = null,
+            isNutCandidate = false,
+            lastSessionType = null,
+            lastOutOfRangeAlertAt = null,
+        )
+        knownTrackerDao.upsert(entity)
+        entity.toDomain()
+    }
 
     override suspend fun renameTracker(id: String, nickname: String) = withContext(ioDispatcher) {
         knownTrackerDao.updateNickname(id, nickname)

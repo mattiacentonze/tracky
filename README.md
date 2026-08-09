@@ -24,6 +24,10 @@ enter/leave automations.
 ## Current Android features
 
 - continuous foreground BLE discovery with Android 12+ permission handling;
+- Android-paired and Tracky-saved devices pinned above other named and unnamed
+  discoveries, with distance or name sorting inside each section;
+- system Bluetooth enable consent followed by automatic paired-device loading and
+  scanning when the user accepts;
 - best-effort advertised/resolved names plus safe unknown-device fallback;
 - local save and rename;
 - dedicated finder with filtered signal, confidence-aware approximate distance,
@@ -39,9 +43,16 @@ enter/leave automations.
 
 ## Technical limits
 
-Tracky sees devices that are actually advertising or discoverable; it cannot list
-every powered Bluetooth device. Names may be missing, and privacy-address rotation
-can make some unbonded devices appear new.
+Tracky can list devices paired in Android even when they are not currently sending
+a BLE advertisement. A live signal and distance are unavailable until a compatible
+device actually advertises. The phone running Tracky does not list itself, and
+Fast Pair devices remembered only in a cloud account may not be part of Android's
+local paired-device set. Names may be missing, and privacy-address rotation can
+make some unbonded devices appear new.
+
+Android 13 and later do not allow a normal app to switch Bluetooth on or off
+silently. Tracky uses Android's standard enable dialog; after one confirmation it
+continues automatically without sending the user through Settings.
 
 RSSI is affected by walls, bodies, pockets, antenna orientation and radio hardware.
 It is good for proximity and movement trends, not guaranteed centimetre-level
