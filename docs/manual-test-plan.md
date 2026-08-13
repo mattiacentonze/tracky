@@ -54,9 +54,8 @@ An emulator result is not evidence that BLE distance, Finder trend, UWB directio
 2. Grant Nearby devices plus precise location permission, accept Android's Bluetooth enable dialog, and
    confirm Tracky starts scanning without opening Settings. Deny it once as a
    separate case and confirm Tracky shows a retry button without a prompt loop.
-3. Leave the GPS/location service off for the first discovery pass; it must not
-   change BLE visibility or RSSI. Enable it only when testing the optional
-   last-seen phone place.
+3. Leave the GPS/location service off; it must not change BLE visibility or RSSI,
+   and Tracky must not ask to turn it on.
 4. Grant notification permission.
 5. Keep the phone off battery saver for the baseline run; test restricted battery behavior separately.
 6. Wake the trackers and place them at known positions.

@@ -21,7 +21,6 @@ import com.aloneagle.tracky.domain.model.TrackerPresence
 import com.aloneagle.tracky.domain.repository.TrackerRepository
 import com.aloneagle.tracky.domain.service.BleConnectionManager
 import com.aloneagle.tracky.domain.service.BleLogSink
-import com.aloneagle.tracky.domain.service.LocationSnapshotProvider
 import com.aloneagle.tracky.domain.service.ProximityEstimator
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -39,7 +38,6 @@ class TrackerRepositoryImpl @Inject constructor(
     private val proximityEstimator: ProximityEstimator,
     private val protocolRegistry: ProtocolRegistry,
     private val bleConnectionManager: BleConnectionManager,
-    private val locationSnapshotProvider: LocationSnapshotProvider,
     private val bleLogSink: BleLogSink,
     @IoDispatcher private val ioDispatcher: CoroutineDispatcher,
 ) : TrackerRepository {
@@ -66,13 +64,6 @@ class TrackerRepositoryImpl @Inject constructor(
             val existing = knownTrackerDao.getById(scanResult.deviceAddress)
             val smoothedRssi = proximityEstimator.smooth(existing?.smoothedRssi, scanResult.rssi)
             val estimate = proximityEstimator.estimate(existing?.smoothedRssi, smoothedRssi)
-            // Last-seen phone location is captured only while the foreground Devices UI owns
-            // the manual scan. Background monitoring must not request while-in-use location.
-            val location = if (sessionType == ScanSessionType.Manual) {
-                locationSnapshotProvider.currentSnapshot()
-            } else {
-                null
-            }
             val adapter = protocolRegistry.resolve(scanResult)
             val entity = KnownTrackerEntity(
                 id = scanResult.deviceAddress,
@@ -88,10 +79,12 @@ class TrackerRepositoryImpl @Inject constructor(
                 lastSeenAt = scanResult.seenAt,
                 lastRssi = scanResult.rssi,
                 smoothedRssi = smoothedRssi,
-                lastLatitude = location?.latitude ?: existing?.lastLatitude,
-                lastLongitude = location?.longitude ?: existing?.lastLongitude,
-                lastAccuracyMeters = location?.accuracyMeters ?: existing?.lastAccuracyMeters,
-                lastLocationAt = location?.observedAt ?: existing?.lastLocationAt,
+                // GPS is not part of BLE ranging. Preserve any legacy local
+                // snapshot, but do not sample phone coordinates during a scan.
+                lastLatitude = existing?.lastLatitude,
+                lastLongitude = existing?.lastLongitude,
+                lastAccuracyMeters = existing?.lastAccuracyMeters,
+                lastLocationAt = existing?.lastLocationAt,
                 presenceState = resolvePresence(scanResult.seenAt).name,
                 connectionState = TrackerConnectionState.Disconnected.name,
                 monitorEnabled = existing?.monitorEnabled ?: false,

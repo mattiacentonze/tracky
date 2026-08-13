@@ -744,7 +744,7 @@ private fun PermissionExplanation(onRequestPermissions: () -> Unit) {
                 Icon(Icons.Outlined.Bluetooth, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                 Text("Allow nearby device access", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Tracky needs Nearby devices and precise location permission for complete BLE results and proximity estimates. Android can filter some beacons without it. GPS does not improve Bluetooth range and can remain off; it is used only if you want a last-seen place. Data stays on this phone.",
+                    "Tracky needs Nearby devices and precise location permission for complete BLE results and proximity estimates. Android can filter some beacons without it. GPS does not improve Bluetooth range, is not used, and can remain off. Data stays on this phone.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Button(onClick = onRequestPermissions, modifier = Modifier.fillMaxWidth()) { Text("Continue") }

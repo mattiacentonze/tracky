@@ -34,73 +34,77 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class ScanViewModelTest {
     @Test
-    fun `one scanner stays active and publishes the live list every five seconds`() = runTest {
-        val dispatcher = StandardTestDispatcher(testScheduler)
+    fun `one scanner stays active and publishes the live list every five seconds`() {
+        val dispatcher = StandardTestDispatcher()
         Dispatchers.setMain(dispatcher)
         try {
-            val coordinator = FakeMonitorCoordinator()
-            val catalog = FakeBluetoothDeviceCatalog(BluetoothRadioState.Enabled)
-            val viewModel = ScanViewModel(coordinator, FakeTrackerRepository(), catalog)
-            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
-                viewModel.uiState.collect()
+            runTest(dispatcher) {
+                val coordinator = FakeMonitorCoordinator()
+                val catalog = FakeBluetoothDeviceCatalog(BluetoothRadioState.Enabled)
+                val viewModel = ScanViewModel(coordinator, FakeTrackerRepository(), catalog)
+                backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+                    viewModel.uiState.collect()
+                }
+
+                viewModel.startScanning()
+                runCurrent()
+                assertThat(coordinator.startCount).isEqualTo(1)
+                assertThat(coordinator.activeCount).isEqualTo(1)
+
+                viewModel.startScanning()
+                runCurrent()
+                assertThat(coordinator.startCount).isEqualTo(1)
+
+                coordinator.results.emit(scan())
+                runCurrent()
+                assertThat(viewModel.uiState.value.sections.totalDeviceCount).isEqualTo(0)
+
+                advanceTimeBy(LIVE_LIST_REFRESH_MILLIS - 1L)
+                runCurrent()
+                assertThat(viewModel.uiState.value.sections.totalDeviceCount).isEqualTo(0)
+
+                advanceTimeBy(1L)
+                runCurrent()
+                assertThat(viewModel.uiState.value.sections.totalDeviceCount).isEqualTo(1)
+
+                viewModel.refreshVisibleDevices()
+                runCurrent()
+                assertThat(coordinator.startCount).isEqualTo(1)
+
+                viewModel.stopScanning()
+                runCurrent()
+                assertThat(coordinator.activeCount).isEqualTo(0)
+                assertThat(viewModel.uiState.value.sections.totalDeviceCount).isEqualTo(0)
             }
-
-            viewModel.startScanning()
-            runCurrent()
-            assertThat(coordinator.startCount).isEqualTo(1)
-            assertThat(coordinator.activeCount).isEqualTo(1)
-
-            viewModel.startScanning()
-            runCurrent()
-            assertThat(coordinator.startCount).isEqualTo(1)
-
-            coordinator.results.emit(scan())
-            runCurrent()
-            assertThat(viewModel.uiState.value.sections.totalDeviceCount).isEqualTo(0)
-
-            advanceTimeBy(LIVE_LIST_REFRESH_MILLIS - 1L)
-            runCurrent()
-            assertThat(viewModel.uiState.value.sections.totalDeviceCount).isEqualTo(0)
-
-            advanceTimeBy(1L)
-            runCurrent()
-            assertThat(viewModel.uiState.value.sections.totalDeviceCount).isEqualTo(1)
-
-            viewModel.refreshVisibleDevices()
-            runCurrent()
-            assertThat(coordinator.startCount).isEqualTo(1)
-
-            viewModel.stopScanning()
-            runCurrent()
-            assertThat(coordinator.activeCount).isEqualTo(0)
-            assertThat(viewModel.uiState.value.sections.totalDeviceCount).isEqualTo(0)
         } finally {
             Dispatchers.resetMain()
         }
     }
 
     @Test
-    fun `disabled Bluetooth never starts the scanner`() = runTest {
-        val dispatcher = StandardTestDispatcher(testScheduler)
+    fun `disabled Bluetooth never starts the scanner`() {
+        val dispatcher = StandardTestDispatcher()
         Dispatchers.setMain(dispatcher)
         try {
-            val coordinator = FakeMonitorCoordinator()
-            val viewModel = ScanViewModel(
-                coordinator,
-                FakeTrackerRepository(),
-                FakeBluetoothDeviceCatalog(BluetoothRadioState.Disabled),
-            )
-            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
-                viewModel.uiState.collect()
+            runTest(dispatcher) {
+                val coordinator = FakeMonitorCoordinator()
+                val viewModel = ScanViewModel(
+                    coordinator,
+                    FakeTrackerRepository(),
+                    FakeBluetoothDeviceCatalog(BluetoothRadioState.Disabled),
+                )
+                backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+                    viewModel.uiState.collect()
+                }
+
+                viewModel.startScanning()
+                runCurrent()
+
+                assertThat(coordinator.startCount).isEqualTo(0)
+                assertThat(viewModel.uiState.value.sections.totalDeviceCount).isEqualTo(0)
+                assertThat(viewModel.uiState.value.radioState).isEqualTo(BluetoothRadioState.Disabled)
+                assertThat(viewModel.uiState.value.isScanning).isFalse()
             }
-
-            viewModel.startScanning()
-            runCurrent()
-
-            assertThat(coordinator.startCount).isEqualTo(0)
-            assertThat(viewModel.uiState.value.sections.totalDeviceCount).isEqualTo(0)
-            assertThat(viewModel.uiState.value.radioState).isEqualTo(BluetoothRadioState.Disabled)
-            assertThat(viewModel.uiState.value.isScanning).isFalse()
         } finally {
             Dispatchers.resetMain()
         }

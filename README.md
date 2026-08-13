@@ -67,7 +67,7 @@ Tracky requests Android's Nearby devices and precise location permissions for
 complete Bluetooth discovery and RSSI proximity. It intentionally does not assert
 `neverForLocation`, because Android can filter some BLE beacons in that mode.
 Turning on GPS does not increase Bluetooth range or make RSSI distance more
-accurate; the location service is used only for an optional last-seen phone place.
+accurate, so Tracky does not sample phone coordinates during scanning.
 
 ## Stack
 

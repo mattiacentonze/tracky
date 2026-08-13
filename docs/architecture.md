@@ -40,7 +40,7 @@ Tracky is a single-module Android application built with Kotlin, Jetpack Compose
 
 1. Devices starts exactly one manual BLE scan after scan/connect and precise location permissions are granted and keeps it until the screen stops. Tracky does not assert `neverForLocation`, avoiding Android's possible filtering of some BLE beacons; the GPS service itself is not required for scanning.
 2. Radio callbacks are merged in memory. A snapshot is published every five seconds; rows expire after ten seconds without another advertisement. Only captured addresses become rows, while paired/saved records provide names and priority metadata.
-3. The repository filters RSSI and stores observations, service metadata, battery snapshots when available, and optional phone location. This persistence runs off the live-list path so a location lookup cannot delay discovery.
+3. The repository filters RSSI and stores observations, service metadata and battery snapshots when available. It does not sample GPS coordinates; persistence runs off the live-list path so storage cannot delay discovery.
 4. Refreshing Devices publishes the current accumulator without restarting Android's scanner, avoiding scan-start throttling.
 5. Finder temporarily owns the scanner for its selected device so a simultaneous background scan does not distort the trend.
 6. Leaving Finder restores monitoring for devices with an enabled monitor or automation.
