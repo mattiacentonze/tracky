@@ -14,8 +14,8 @@ Depending on the permissions and features you use, Tracky may process:
   manufacturer data and signal strength;
 - friendly names and proximity automations you create;
 - timestamps, recent signal observations and diagnostic GATT events;
-- the phone's approximate location at the time of a sighting, only when location
-  permission is granted and that feature is used;
+- the phone's approximate location at the time of a sighting when Android location
+  permission is granted; this is stored only for the local last-seen feature;
 - notification, sound and vibration preferences.
 
 This information is stored in the app's private local database. Android backup is
@@ -40,7 +40,8 @@ you choose. Logs can contain device identifiers; review and redact them first.
 
 - Nearby devices: scan for and connect to supported Bluetooth devices.
 - Notifications: display monitoring state, alerts and action prompts.
-- Location: optional last-seen phone location when enabled.
+- Location: Android permission for complete proximity scan results and an optional
+  last-seen phone place. GPS is not used to improve Bluetooth signal or range.
 
 You can revoke permissions or clear all app data in Android settings. Uninstalling
 Tracky deletes its private local data, subject to Android device-management rules.

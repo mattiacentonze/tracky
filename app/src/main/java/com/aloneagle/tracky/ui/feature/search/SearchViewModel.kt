@@ -323,7 +323,14 @@ fun SearchScreen(
             PermissionRequired(
                 modifier = Modifier.padding(innerPadding),
                 onGrant = {
-                    permissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT))
+                    permissionLauncher.launch(
+                        arrayOf(
+                            Manifest.permission.BLUETOOTH_SCAN,
+                            Manifest.permission.BLUETOOTH_CONNECT,
+                            Manifest.permission.ACCESS_COARSE_LOCATION,
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                        ),
+                    )
                 },
             )
         } else if (uiState.radioState == BluetoothRadioState.Disabled) {
@@ -567,8 +574,8 @@ private fun PermissionRequired(modifier: Modifier, onGrant: () -> Unit) {
     Column(modifier = modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
         Card(shape = RoundedCornerShape(22.dp)) {
             Column(modifier = Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Bluetooth access required", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                Text("Finding compares live Bluetooth signal readings from the selected device.")
+                Text("Bluetooth permissions required", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text("Finding needs Nearby devices and precise location permission for complete BLE results. GPS can remain off because it does not improve Bluetooth signal readings.")
                 Button(onClick = onGrant, modifier = Modifier.fillMaxWidth()) { Text("Continue") }
             }
         }
@@ -600,6 +607,7 @@ private fun FinderBluetoothState(
 private fun Context.hasBlePermissions(): Boolean = listOf(
     Manifest.permission.BLUETOOTH_SCAN,
     Manifest.permission.BLUETOOTH_CONNECT,
+    Manifest.permission.ACCESS_FINE_LOCATION,
 ).all { permission -> ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED }
 
 private const val LIVE_SIGNAL_TIMEOUT_MILLIS = 12_000L

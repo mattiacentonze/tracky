@@ -23,9 +23,10 @@ enter/leave automations.
 
 ## Current Android features
 
-- continuous foreground BLE discovery with Android 12+ permission handling;
-- Android-paired and Tracky-saved devices pinned above other named and unnamed
-  discoveries, with distance or name sorting inside each section;
+- one foreground BLE scan while Devices is visible, with Android 12+ permission
+  handling and a stable five-second UI refresh;
+- live broadcasts only: captured Android-paired devices first, then captured named
+  and unnamed devices, with distance or name sorting inside each section;
 - system Bluetooth enable consent followed by automatic paired-device loading and
   scanning when the user accepts;
 - best-effort advertised/resolved names plus safe unknown-device fallback;
@@ -43,9 +44,9 @@ enter/leave automations.
 
 ## Technical limits
 
-Tracky can list devices paired in Android even when they are not currently sending
-a BLE advertisement. A live signal and distance are unavailable until a compatible
-device actually advertises. The phone running Tracky does not list itself, and
+Devices lists only advertisements received by the current scan. A paired, saved,
+sleeping, Bluetooth Classic-only, or non-advertising accessory is intentionally
+absent until Tracky receives a compatible BLE broadcast. The phone running Tracky does not list itself, and
 Fast Pair devices remembered only in a cloud account may not be part of Android's
 local paired-device set. Names may be missing, and privacy-address rotation can
 make some unbonded devices appear new.
@@ -61,6 +62,12 @@ distance plus direction normally requires a compatible UWB phone and accessory.
 
 Background BLE behavior and vendor-specific GATT commands must be validated on a
 physical Android phone. The browser preview is intentionally a UX simulator.
+
+Tracky requests Android's Nearby devices and precise location permissions for
+complete Bluetooth discovery and RSSI proximity. It intentionally does not assert
+`neverForLocation`, because Android can filter some BLE beacons in that mode.
+Turning on GPS does not increase Bluetooth range or make RSSI distance more
+accurate; the location service is used only for an optional last-seen phone place.
 
 ## Stack
 

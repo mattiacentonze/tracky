@@ -15,7 +15,9 @@ import com.aloneagle.tracky.domain.service.BleScanner
 import com.aloneagle.tracky.domain.service.TrackerMonitorCoordinator
 import com.aloneagle.tracky.domain.service.ProximityRuleEvaluator
 import com.aloneagle.tracky.notifications.TrackyNotifications
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
@@ -56,12 +58,13 @@ class DefaultTrackerMonitorCoordinator @Inject constructor(
     private val realtimeObservations = ConcurrentHashMap<String, MutableStateFlow<TrackerObservation?>>()
     private val trackerEvaluationMutexes = ConcurrentHashMap<String, Mutex>()
     private val failedDispatchAt = ConcurrentHashMap<String, Long>()
+    private val lastManualPersistenceAt = ConcurrentHashMap<String, Long>()
     private val scope = CoroutineScope(SupervisorJob() + ioDispatcher)
 
     private var searchJob: Job? = null
     private var monitorJob: Job? = null
     private var alertJob: Job? = null
-    @Volatile private var manualScanActive = false
+    private val manualScanMutex = Mutex()
     @Volatile private var monitorScannerHealthySince: Long? = null
     private val scanRetryBackoff = ReconnectBackoffPolicy()
 
@@ -69,33 +72,71 @@ class DefaultTrackerMonitorCoordinator @Inject constructor(
         realtimeObservations.computeIfAbsent(trackerId) { MutableStateFlow<TrackerObservation?>(null) }
 
     override fun scanNearby(sessionId: String): Flow<BleScanResult> = flow {
-        manualScanActive = true
+        manualScanMutex.lock()
         try {
             setMonitorScannerHealthy(false)
             monitorJob?.cancelAndJoin()
             monitorJob = null
             val savedTrackerIds = trackerRepository.observeKnownTrackers().first()
-                .mapTo(hashSetOf()) { tracker -> tracker.id }
+                .mapTo(hashSetOf()) { tracker -> tracker.deviceAddress.uppercase(Locale.ROOT) }
             bleScanner.scan(
                 sessionId = sessionId,
                 sessionType = ScanSessionType.Manual,
             ).collect { scanResult ->
-                if (scanResult.deviceAddress in savedTrackerIds) {
-                    val tracker = trackerRepository.upsertFromScan(scanResult, ScanSessionType.Manual)
-                    publishObservation(
-                        tracker = tracker,
-                        rssi = scanResult.rssi,
-                        seenAt = scanResult.seenAt,
-                        sessionType = ScanSessionType.Manual,
-                        serviceUuids = scanResult.serviceUuids,
-                    )
-                }
+                // The live list must never wait for Room or an optional location
+                // snapshot. Persist saved devices on the coordinator's IO scope
+                // after handing the radio result to the UI.
                 emit(scanResult)
+                val normalizedAddress = scanResult.deviceAddress.uppercase(Locale.ROOT)
+                if (
+                    normalizedAddress in savedTrackerIds &&
+                    shouldPersistManualObservation(normalizedAddress, scanResult.seenAt)
+                ) {
+                    scope.launch {
+                        try {
+                            val tracker = trackerRepository.upsertFromScan(scanResult, ScanSessionType.Manual)
+                            publishObservation(
+                                tracker = tracker,
+                                rssi = scanResult.rssi,
+                                seenAt = scanResult.seenAt,
+                                sessionType = ScanSessionType.Manual,
+                                serviceUuids = scanResult.serviceUuids,
+                            )
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (throwable: Throwable) {
+                            bleLogSink.log(
+                                BleLogEvent(
+                                    sessionId = sessionId,
+                                    trackerId = scanResult.deviceAddress,
+                                    timestamp = System.currentTimeMillis(),
+                                    category = BleLogEvent.Category.Repository,
+                                    action = "manual_persist_failed",
+                                    message = throwable.message ?: "Could not persist a manual scan observation.",
+                                    deviceAddress = scanResult.deviceAddress,
+                                ),
+                            )
+                        }
+                    }
+                }
             }
         } finally {
-            manualScanActive = false
+            manualScanMutex.unlock()
             withContext(NonCancellable) { syncMonitoredTrackers() }
         }
+    }
+
+    private fun shouldPersistManualObservation(address: String, seenAt: Long): Boolean {
+        val accepted = AtomicBoolean(false)
+        lastManualPersistenceAt.compute(address) { _, previous ->
+            if (previous == null || seenAt - previous >= MANUAL_PERSIST_INTERVAL_MILLIS) {
+                accepted.set(true)
+                seenAt
+            } else {
+                previous
+            }
+        }
+        return accepted.get()
     }
 
     override suspend fun startSearch(trackerId: String) {
@@ -160,7 +201,7 @@ class DefaultTrackerMonitorCoordinator @Inject constructor(
             alertJob = null
             return
         }
-        if (_activeSearchTrackerId.value != null || manualScanActive) return
+        if (_activeSearchTrackerId.value != null || manualScanMutex.isLocked) return
         if (alertJob?.isActive != true) {
             alertJob = scope.launch {
                 while (true) {
@@ -342,7 +383,7 @@ class DefaultTrackerMonitorCoordinator @Inject constructor(
             }
         }
     }
-
 }
 
 private const val FAILED_DISPATCH_RETRY_MILLIS = 30_000L
+private const val MANUAL_PERSIST_INTERVAL_MILLIS = 5_000L

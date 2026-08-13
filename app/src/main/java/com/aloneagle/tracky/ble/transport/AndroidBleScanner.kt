@@ -56,10 +56,10 @@ class AndroidBleScanner @Inject constructor(
                     timestamp = System.currentTimeMillis(),
                     category = BleLogEvent.Category.Scan,
                     action = "permission_missing",
-                    message = "BLUETOOTH_SCAN permission is missing.",
+                    message = "Bluetooth scan or precise location permission is missing.",
                 ),
             )
-            close(BleScanException("BLUETOOTH_SCAN permission is missing."))
+            close(BleScanException("Bluetooth scan or precise location permission is missing."))
             return@callbackFlow
         }
         if (
@@ -125,6 +125,7 @@ class AndroidBleScanner @Inject constructor(
 
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
+                if (!matchesTargetAddress(targetAddresses, result.device?.address.orEmpty())) return
                 trySend(result.toDomainResult())
                 log(
                     BleLogEvent(
@@ -146,6 +147,7 @@ class AndroidBleScanner @Inject constructor(
 
             override fun onScanFailed(errorCode: Int) {
                 onScanHealthChanged(false)
+                val failureMessage = scanFailureMessage(errorCode)
                 log(
                     BleLogEvent(
                         sessionId = sessionId,
@@ -153,11 +155,11 @@ class AndroidBleScanner @Inject constructor(
                         timestamp = System.currentTimeMillis(),
                         category = BleLogEvent.Category.Scan,
                         action = "scan_failed",
-                        message = "Scan failed with code $errorCode.",
+                        message = failureMessage,
                         resultCode = errorCode,
                     ),
                 )
-                close(BleScanException("BLE scan failed with code $errorCode."))
+                close(BleScanException(failureMessage))
             }
         }
 
@@ -267,9 +269,15 @@ class AndroidBleScanner @Inject constructor(
         }
     }
 
-    private fun buildFilters(targetAddresses: Set<String>): List<ScanFilter> = targetAddresses
-        .filter { it.isNotBlank() }
-        .map { address -> ScanFilter.Builder().setDeviceAddress(address).build() }
+    private fun buildFilters(targetAddresses: Set<String>): List<ScanFilter> =
+        if (targetAddresses.none(String::isNotBlank)) {
+            emptyList()
+        } else {
+            // setDeviceAddress(String) silently assumes a public BLE address.
+            // A wildcard hardware filter plus callback filtering also accepts
+            // random/private addresses used by many trackers.
+            listOf(ScanFilter.Builder().build())
+        }
 
     private fun buildSettings(sessionType: ScanSessionType): ScanSettings = ScanSettings.Builder()
         .setScanMode(
@@ -281,6 +289,8 @@ class AndroidBleScanner @Inject constructor(
                 ScanSessionType.Monitor -> ScanSettings.SCAN_MODE_BALANCED
             },
         )
+        .setLegacy(false)
+        .setPhy(ScanSettings.PHY_LE_ALL_SUPPORTED)
         .build()
 
     private fun ScanResult.toDomainResult(): BleScanResult {
@@ -333,9 +343,40 @@ class AndroidBleScanner @Inject constructor(
         logScope.launch { bleLogSink.log(event) }
     }
 
-    private fun hasScanPermission(): Boolean = ContextCompat.checkSelfPermission(
-        context,
-        Manifest.permission.BLUETOOTH_SCAN,
-    ) == PackageManager.PERMISSION_GRANTED
+    private fun hasScanPermission(): Boolean =
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.BLUETOOTH_SCAN,
+        ) == PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+            ) == PackageManager.PERMISSION_GRANTED
 
+    private fun scanFailureMessage(errorCode: Int): String = when (errorCode) {
+        ScanCallback.SCAN_FAILED_ALREADY_STARTED ->
+            "A Bluetooth scan is already active. Tracky will reuse a single scanner after reopening this screen."
+        ScanCallback.SCAN_FAILED_APPLICATION_REGISTRATION_FAILED ->
+            "Android could not register the Bluetooth scanner. Toggle Bluetooth and try again."
+        ScanCallback.SCAN_FAILED_INTERNAL_ERROR ->
+            "Android reported an internal Bluetooth scanner error. Toggle Bluetooth and try again."
+        ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED ->
+            "This phone does not support the requested Bluetooth scan."
+        SCAN_FAILED_OUT_OF_HARDWARE_RESOURCES ->
+            "The phone has no Bluetooth scan resources available. Close other Bluetooth scanner apps and retry."
+        SCAN_FAILED_SCANNING_TOO_FREQUENTLY ->
+            "Android temporarily blocked Bluetooth scanning because it was started too often. Wait 30 seconds, then retry."
+        else -> "BLE scan failed with Android error code $errorCode."
+    }
 }
+
+// These platform values were added after minSdk 31. Keeping the stable numeric
+// result codes local avoids requiring an API guard merely to explain a failure
+// returned by an older device.
+private const val SCAN_FAILED_OUT_OF_HARDWARE_RESOURCES = 5
+private const val SCAN_FAILED_SCANNING_TOO_FREQUENTLY = 6
+
+internal fun matchesTargetAddress(targetAddresses: Set<String>, resultAddress: String): Boolean =
+    targetAddresses.isEmpty() || targetAddresses.any { address ->
+        address.equals(resultAddress, ignoreCase = true)
+    }
