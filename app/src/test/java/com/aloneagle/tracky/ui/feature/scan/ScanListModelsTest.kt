@@ -12,12 +12,12 @@ import org.junit.Test
 
 class ScanListModelsTest {
     @Test
-    fun `groups paired first then named and unnamed devices`() {
+    fun `groups only captured paired then named and unnamed devices`() {
         val sections = buildScanSections(
             discoveredDevices = listOf(
-                scan(address = PAIRED_ADDRESS, name = "Advertised buds", rssi = -64),
-                scan(address = NAMED_ADDRESS, name = "Keyboard", rssi = -41),
-                scan(address = UNNAMED_ADDRESS, name = null, rssi = -35),
+                scan(PAIRED_ADDRESS, "Advertised buds", -64),
+                scan(NAMED_ADDRESS, "Keyboard", -41),
+                scan(UNNAMED_ADDRESS, null, -35),
             ),
             knownTrackers = emptyList(),
             pairedDevices = listOf(PairedBluetoothDevice(PAIRED_ADDRESS, "Mattia's earbuds")),
@@ -31,43 +31,68 @@ class ScanListModelsTest {
     }
 
     @Test
-    fun `deduplicates paired saved and live entries by address ignoring case`() {
-        val tracker = knownTracker(
-            address = PAIRED_ADDRESS.lowercase(),
-            nickname = "Travel buds",
-            resolvedName = "Old name",
+    fun `omits paired and saved devices without a current scan result`() {
+        val sections = buildScanSections(
+            discoveredDevices = emptyList(),
+            knownTrackers = listOf(knownTracker(PAIRED_ADDRESS, nickname = "Backpack tag")),
+            pairedDevices = listOf(PairedBluetoothDevice(PAIRED_ADDRESS, "Earbuds")),
+            sortOption = DeviceSortOption.Distance,
         )
+
+        assertThat(sections.totalDeviceCount).isEqualTo(0)
+    }
+
+    @Test
+    fun `deduplicates captured saved and paired metadata by address ignoring case`() {
         val sections = buildScanSections(
             discoveredDevices = listOf(scan(PAIRED_ADDRESS, "Broadcast name", -50)),
-            knownTrackers = listOf(tracker),
+            knownTrackers = listOf(knownTracker(PAIRED_ADDRESS.lowercase(), nickname = "Travel buds")),
             pairedDevices = listOf(PairedBluetoothDevice(PAIRED_ADDRESS, "Android alias")),
             sortOption = DeviceSortOption.Distance,
         )
 
         assertThat(sections.totalDeviceCount).isEqualTo(1)
         assertThat(sections.yourDevices.single().displayName).isEqualTo("Travel buds")
-        assertThat(sections.yourDevices.single().isLive).isTrue()
         assertThat(sections.yourDevices.single().isPaired).isTrue()
         assertThat(sections.yourDevices.single().isSaved).isTrue()
     }
 
     @Test
-    fun `distance sort puts strongest live signal first and unavailable signal last`() {
-        val weak = PairedBluetoothDevice(PAIRED_ADDRESS, "Weak")
-        val strong = PairedBluetoothDevice(NAMED_ADDRESS, "Strong")
-        val unavailable = PairedBluetoothDevice(UNNAMED_ADDRESS, "Unavailable")
+    fun `saved but unpaired captured device is categorized by its effective name`() {
         val sections = buildScanSections(
-            discoveredDevices = listOf(
-                scan(PAIRED_ADDRESS, "Weak", -82),
-                scan(NAMED_ADDRESS, "Strong", -43),
-            ),
-            knownTrackers = emptyList(),
-            pairedDevices = listOf(weak, unavailable, strong),
+            discoveredDevices = listOf(scan(NAMED_ADDRESS, null, -58)),
+            knownTrackers = listOf(knownTracker(NAMED_ADDRESS, nickname = "Bike tag")),
+            pairedDevices = emptyList(),
             sortOption = DeviceSortOption.Distance,
         )
 
-        assertThat(sections.yourDevices.map { it.displayName })
-            .containsExactly("Strong", "Weak", "Unavailable")
+        assertThat(sections.yourDevices).isEmpty()
+        assertThat(sections.namedNearby.single().displayName).isEqualTo("Bike tag")
+        assertThat(sections.namedNearby.single().isSaved).isTrue()
+    }
+
+    @Test
+    fun `distance sort uses strongest signal inside fixed sections`() {
+        val sections = buildScanSections(
+            discoveredDevices = listOf(
+                scan(PAIRED_ADDRESS, "Weak", -82),
+                scan(SECOND_PAIRED_ADDRESS, "Strong", -43),
+                scan(NAMED_ADDRESS, "Named weak", -90),
+                scan(SECOND_NAMED_ADDRESS, "Named strong", -50),
+            ),
+            knownTrackers = emptyList(),
+            pairedDevices = listOf(
+                PairedBluetoothDevice(PAIRED_ADDRESS, "Weak"),
+                PairedBluetoothDevice(SECOND_PAIRED_ADDRESS, "Strong"),
+            ),
+            sortOption = DeviceSortOption.Distance,
+        )
+
+        assertThat(sections.yourDevices.map { it.deviceAddress })
+            .containsExactly(SECOND_PAIRED_ADDRESS, PAIRED_ADDRESS)
+            .inOrder()
+        assertThat(sections.namedNearby.map { it.deviceAddress })
+            .containsExactly(SECOND_NAMED_ADDRESS, NAMED_ADDRESS)
             .inOrder()
     }
 
@@ -93,41 +118,32 @@ class ScanListModelsTest {
     }
 
     @Test
-    fun `saved device remains in first section without a current broadcast`() {
+    fun `blank name remains unnamed and duplicate names keep distinct addresses`() {
         val sections = buildScanSections(
-            discoveredDevices = emptyList(),
-            knownTrackers = listOf(knownTracker(PAIRED_ADDRESS, nickname = "Backpack tag")),
-            pairedDevices = emptyList(),
-            sortOption = DeviceSortOption.Distance,
-        )
-
-        assertThat(sections.yourDevices.single().displayName).isEqualTo("Backpack tag")
-        assertThat(sections.yourDevices.single().isLive).isFalse()
-        assertThat(sections.namedNearby).isEmpty()
-        assertThat(sections.unnamedNearby).isEmpty()
-    }
-
-    @Test
-    fun `blank advertised name remains in unnamed section`() {
-        val sections = buildScanSections(
-            discoveredDevices = listOf(scan(UNNAMED_ADDRESS, "   ", -52)),
+            discoveredDevices = listOf(
+                scan(UNNAMED_ADDRESS, "   ", -52),
+                scan(NAMED_ADDRESS, "Sensor", -60),
+                scan(SECOND_NAMED_ADDRESS, "Sensor", -61),
+            ),
             knownTrackers = emptyList(),
             pairedDevices = emptyList(),
             sortOption = DeviceSortOption.Name,
         )
 
-        assertThat(sections.namedNearby).isEmpty()
         assertThat(sections.unnamedNearby.single().deviceAddress).isEqualTo(UNNAMED_ADDRESS)
+        assertThat(sections.namedNearby.map { it.deviceAddress })
+            .containsExactly(NAMED_ADDRESS, SECOND_NAMED_ADDRESS)
+            .inOrder()
     }
 
-    private fun scan(address: String, name: String?, rssi: Int) = BleScanResult(
+    private fun scan(address: String, name: String?, rssi: Int, seenAt: Long = 1_000L) = BleScanResult(
         deviceAddress = address,
         advertisedName = name,
         resolvedName = null,
         manufacturerDataHex = null,
         serviceUuids = emptyList(),
         rssi = rssi,
-        seenAt = 1_000L,
+        seenAt = seenAt,
         connectable = true,
     )
 
@@ -161,8 +177,9 @@ class ScanListModelsTest {
 
     private companion object {
         const val PAIRED_ADDRESS = "AA:BB:CC:DD:EE:01"
-        const val NAMED_ADDRESS = "AA:BB:CC:DD:EE:02"
-        const val SECOND_NAMED_ADDRESS = "AA:BB:CC:DD:EE:03"
-        const val UNNAMED_ADDRESS = "AA:BB:CC:DD:EE:04"
+        const val SECOND_PAIRED_ADDRESS = "AA:BB:CC:DD:EE:02"
+        const val NAMED_ADDRESS = "AA:BB:CC:DD:EE:03"
+        const val SECOND_NAMED_ADDRESS = "AA:BB:CC:DD:EE:04"
+        const val UNNAMED_ADDRESS = "AA:BB:CC:DD:EE:05"
     }
 }

@@ -6,7 +6,7 @@ Tracky is a single-module Android application built with Kotlin, Jetpack Compose
 
 ## Product Surfaces
 
-- **Devices** is the start destination. It scans nearby BLE advertisements, shows the best available name and signal estimate, and lets the user save, rename, inspect, or find a device. Saved devices remain accessible in a clearly marked not-currently-seen section when they are not advertising.
+- **Devices** is the start destination. It shows only recently received BLE advertisements, refreshes the stable UI snapshot every five seconds, enriches captured rows with paired/saved metadata, and lets the user save, rename, inspect, or find a device.
 - **Finder** is opened for a saved device. It shows filtered RSSI proximity, recent signal, and an improving/stable/weakening trend. Optional sound and haptic feedback can help while moving around.
 - **Automations** stores on-device enter/leave rules for saved devices. A rule can request a notification, sound, vibration, the Android Wi-Fi panel, or a WhatsApp/Telegram draft.
 - **Settings** reports permission state, build information, privacy behavior, and BLE limitations.
@@ -38,12 +38,13 @@ Tracky is a single-module Android application built with Kotlin, Jetpack Compose
 
 ## BLE Data Flow
 
-1. Devices starts a manual BLE scan after scan/connect permissions are granted.
-2. Advertisements are rendered immediately; saving a device persists its resolved identity and latest observation. Saved devices without a current advertisement remain available for Finder and Details without being presented as currently nearby.
-3. The repository filters RSSI and stores observations, service metadata, battery snapshots when available, and optional phone location.
-4. Finder temporarily owns the scanner for its selected device so a simultaneous background scan does not distort the trend.
-5. Leaving Finder restores monitoring for devices with an enabled monitor or automation.
-6. GATT refresh and diagnostics perform service discovery and conservative reads/writes through the connection manager.
+1. Devices starts exactly one manual BLE scan after scan/connect and precise location permissions are granted and keeps it until the screen stops. Tracky does not assert `neverForLocation`, avoiding Android's possible filtering of some BLE beacons; the GPS service itself is not required for scanning.
+2. Radio callbacks are merged in memory. A snapshot is published every five seconds; rows expire after ten seconds without another advertisement. Only captured addresses become rows, while paired/saved records provide names and priority metadata.
+3. The repository filters RSSI and stores observations, service metadata and battery snapshots when available. It does not sample GPS coordinates; persistence runs off the live-list path so storage cannot delay discovery.
+4. Refreshing Devices publishes the current accumulator without restarting Android's scanner, avoiding scan-start throttling.
+5. Finder temporarily owns the scanner for its selected device so a simultaneous background scan does not distort the trend.
+6. Leaving Finder restores monitoring for devices with an enabled monitor or automation.
+7. GATT refresh and diagnostics perform service discovery and conservative reads/writes through the connection manager.
 
 ## Proximity And Automation Flow
 

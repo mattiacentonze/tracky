@@ -15,7 +15,9 @@ import com.aloneagle.tracky.domain.service.BleScanner
 import com.aloneagle.tracky.domain.service.TrackerMonitorCoordinator
 import com.aloneagle.tracky.domain.service.ProximityRuleEvaluator
 import com.aloneagle.tracky.notifications.TrackyNotifications
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
@@ -25,6 +27,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.Flow
@@ -56,12 +59,17 @@ class DefaultTrackerMonitorCoordinator @Inject constructor(
     private val realtimeObservations = ConcurrentHashMap<String, MutableStateFlow<TrackerObservation?>>()
     private val trackerEvaluationMutexes = ConcurrentHashMap<String, Mutex>()
     private val failedDispatchAt = ConcurrentHashMap<String, Long>()
+    private val lastManualPersistenceAt = ConcurrentHashMap<String, Long>()
     private val scope = CoroutineScope(SupervisorJob() + ioDispatcher)
 
     private var searchJob: Job? = null
     private var monitorJob: Job? = null
     private var alertJob: Job? = null
-    @Volatile private var manualScanActive = false
+    private var pendingMonitorResumeJob: Job? = null
+    private val transitionMutex = Mutex()
+    private val scannerOwnershipMutex = Mutex()
+    private val manualSessionMutex = Mutex()
+    private var manualScanActive = false
     @Volatile private var monitorScannerHealthySince: Long? = null
     private val scanRetryBackoff = ReconnectBackoffPolicy()
 
@@ -69,89 +77,179 @@ class DefaultTrackerMonitorCoordinator @Inject constructor(
         realtimeObservations.computeIfAbsent(trackerId) { MutableStateFlow<TrackerObservation?>(null) }
 
     override fun scanNearby(sessionId: String): Flow<BleScanResult> = flow {
-        manualScanActive = true
-        try {
-            setMonitorScannerHealthy(false)
-            monitorJob?.cancelAndJoin()
-            monitorJob = null
-            val savedTrackerIds = trackerRepository.observeKnownTrackers().first()
-                .mapTo(hashSetOf()) { tracker -> tracker.id }
-            bleScanner.scan(
-                sessionId = sessionId,
-                sessionType = ScanSessionType.Manual,
-            ).collect { scanResult ->
-                if (scanResult.deviceAddress in savedTrackerIds) {
-                    val tracker = trackerRepository.upsertFromScan(scanResult, ScanSessionType.Manual)
-                    publishObservation(
-                        tracker = tracker,
-                        rssi = scanResult.rssi,
-                        seenAt = scanResult.seenAt,
-                        sessionType = ScanSessionType.Manual,
-                        serviceUuids = scanResult.serviceUuids,
-                    )
+        manualSessionMutex.withLock {
+            var ownershipActivated = false
+            try {
+                transitionMutex.withLock {
+                    ownershipActivated = true
+                    manualScanActive = true
+                    cancelPendingMonitorResumeLocked()
+                    setMonitorScannerHealthy(false)
+                    monitorJob?.cancelAndJoin()
+                    monitorJob = null
                 }
-                emit(scanResult)
+                val savedTrackerIds = trackerRepository.observeKnownTrackers().first()
+                    .mapTo(hashSetOf()) { tracker -> tracker.deviceAddress.uppercase(Locale.ROOT) }
+                coroutineScope {
+                    scannerOwnershipMutex.withLock {
+                        bleScanner.scan(
+                            sessionId = sessionId,
+                            sessionType = ScanSessionType.Manual,
+                        ).collect { scanResult ->
+                            // Persistence is a child of this foreground session,
+                            // but never blocks delivery of the live radio result.
+                            emit(scanResult)
+                            val normalizedAddress = scanResult.deviceAddress.uppercase(Locale.ROOT)
+                            if (
+                                normalizedAddress in savedTrackerIds &&
+                                shouldPersistManualObservation(normalizedAddress, scanResult.seenAt)
+                            ) {
+                                launch(ioDispatcher) {
+                                    persistManualObservation(sessionId, scanResult)
+                                }
+                            }
+                        }
+                    }
+                }
+            } finally {
+                if (ownershipActivated) {
+                    withContext(NonCancellable) {
+                        transitionMutex.withLock {
+                            manualScanActive = false
+                            scheduleMonitorResumeLocked()
+                        }
+                    }
+                }
             }
-        } finally {
-            manualScanActive = false
-            withContext(NonCancellable) { syncMonitoredTrackers() }
         }
     }
 
+    private suspend fun persistManualObservation(sessionId: String, scanResult: BleScanResult) {
+        try {
+            val tracker = trackerRepository.upsertFromScan(scanResult, ScanSessionType.Manual)
+            publishObservation(
+                tracker = tracker,
+                rssi = scanResult.rssi,
+                seenAt = scanResult.seenAt,
+                sessionType = ScanSessionType.Manual,
+                serviceUuids = scanResult.serviceUuids,
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (throwable: Throwable) {
+            bleLogSink.log(
+                BleLogEvent(
+                    sessionId = sessionId,
+                    trackerId = scanResult.deviceAddress,
+                    timestamp = System.currentTimeMillis(),
+                    category = BleLogEvent.Category.Repository,
+                    action = "manual_persist_failed",
+                    message = throwable.message ?: "Could not persist a manual scan observation.",
+                    deviceAddress = scanResult.deviceAddress,
+                ),
+            )
+        }
+    }
+
+    private fun shouldPersistManualObservation(address: String, seenAt: Long): Boolean {
+        val accepted = AtomicBoolean(false)
+        lastManualPersistenceAt.compute(address) { _, previous ->
+            if (previous == null || seenAt - previous >= MANUAL_PERSIST_INTERVAL_MILLIS) {
+                accepted.set(true)
+                seenAt
+            } else {
+                previous
+            }
+        }
+        return accepted.get()
+    }
+
     override suspend fun startSearch(trackerId: String) {
-        _activeSearchTrackerId.value = trackerId
-        searchJob?.cancel()
-        // Android only allows a small number of concurrent scans and duplicate scans
-        // make signal trends less trustworthy. Search temporarily owns the scanner.
-        setMonitorScannerHealthy(false)
-        monitorJob?.cancelAndJoin()
-        monitorJob = null
-        // Monitoring is intentionally paused while Finder owns the scanner. Absence during
-        // that pause is not evidence that another device left its configured range.
-        alertJob?.cancel()
-        alertJob = null
-        searchJob = scope.launch {
-            var failedAttempts = 0
-            while (isActive && _activeSearchTrackerId.value == trackerId) {
-                val sessionId = "search-${System.currentTimeMillis()}-$failedAttempts"
-                try {
-                    bleScanner.scan(
-                        sessionId = sessionId,
-                        sessionType = ScanSessionType.Search,
-                        targetAddresses = setOf(trackerId),
-                    ).collect { scanResult ->
-                        failedAttempts = 0
-                        val tracker = trackerRepository.upsertFromScan(scanResult, ScanSessionType.Search)
-                        publishObservation(tracker, scanResult.rssi, scanResult.seenAt, ScanSessionType.Search, scanResult.serviceUuids)
+        transitionMutex.withLock {
+            cancelPendingMonitorResumeLocked()
+            if (_activeSearchTrackerId.value == trackerId && searchJob?.isActive == true) return
+            _activeSearchTrackerId.value = trackerId
+            searchJob?.cancelAndJoin()
+            searchJob = null
+            // Search temporarily owns Android's single scanner. Join the old
+            // monitor before launching it so their callbacks cannot overlap.
+            setMonitorScannerHealthy(false)
+            monitorJob?.cancelAndJoin()
+            monitorJob = null
+            alertJob?.cancel()
+            alertJob = null
+            searchJob = scope.launch {
+                var failedAttempts = 0
+                while (isActive && _activeSearchTrackerId.value == trackerId) {
+                    val sessionId = "search-${System.currentTimeMillis()}-$failedAttempts"
+                    try {
+                        scannerOwnershipMutex.withLock {
+                            bleScanner.scan(
+                                sessionId = sessionId,
+                                sessionType = ScanSessionType.Search,
+                                targetAddresses = setOf(trackerId),
+                            ).collect { scanResult ->
+                                failedAttempts = 0
+                                val tracker = trackerRepository.upsertFromScan(scanResult, ScanSessionType.Search)
+                                publishObservation(
+                                    tracker,
+                                    scanResult.rssi,
+                                    scanResult.seenAt,
+                                    ScanSessionType.Search,
+                                    scanResult.serviceUuids,
+                                )
+                            }
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Throwable) {
+                        // Transport failures are logged by the scanner and retried below.
                     }
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Throwable) {
-                    // Transport failures are logged by the scanner and retried below.
+                    delay(scanRetryBackoff.nextDelayMillis(failedAttempts).coerceAtMost(60_000L))
+                    failedAttempts = (failedAttempts + 1).coerceAtMost(3)
                 }
-                delay(scanRetryBackoff.nextDelayMillis(failedAttempts).coerceAtMost(60_000L))
-                failedAttempts = (failedAttempts + 1).coerceAtMost(3)
             }
         }
     }
 
     override suspend fun stopSearch(trackerId: String) {
-        if (_activeSearchTrackerId.value == trackerId) {
+        transitionMutex.withLock {
+            if (_activeSearchTrackerId.value != trackerId) return
             _activeSearchTrackerId.value = null
+            searchJob?.cancelAndJoin()
+            searchJob = null
+            // Navigation commonly hands Search straight back to Devices. A
+            // short grace period prevents an unnecessary monitor scan between them.
+            scheduleMonitorResumeLocked()
         }
-        searchJob?.cancel()
-        searchJob = null
-        syncMonitoredTrackers()
     }
 
     override suspend fun syncMonitoredTrackers() {
+        transitionMutex.withLock {
+            cancelPendingMonitorResumeLocked()
+            syncMonitoredTrackersLocked()
+        }
+    }
+
+    private suspend fun syncMonitoredTrackersLocked() {
         val enabledRuleTrackerIds = automationRepository.observeRules().first()
             .filter { stored -> stored.rule.enabled }
             .mapTo(linkedSetOf()) { stored -> stored.rule.trackerId }
         val trackers = trackerRepository.observeKnownTrackers().first()
             .filter { tracker -> tracker.monitorEnabled || tracker.id in enabledRuleTrackerIds }
         val trackerIds = trackers.mapTo(linkedSetOf()) { tracker -> tracker.id }
+        val sameTargets = trackerIds == _activeTrackerIds.value
         _activeTrackerIds.value = trackerIds
+        if (
+            sameTargets &&
+            trackerIds.isNotEmpty() &&
+            _activeSearchTrackerId.value == null &&
+            !manualScanActive &&
+            monitorJob?.isActive == true
+        ) {
+            ensureAlertJobLocked()
+            return
+        }
         monitorJob?.cancelAndJoin()
         monitorJob = null
         setMonitorScannerHealthy(false)
@@ -161,29 +259,30 @@ class DefaultTrackerMonitorCoordinator @Inject constructor(
             return
         }
         if (_activeSearchTrackerId.value != null || manualScanActive) return
-        if (alertJob?.isActive != true) {
-            alertJob = scope.launch {
-                while (true) {
-                    evaluateOutOfRangeAlerts()
-                    delay(15_000L)
-                }
-            }
-        }
+        ensureAlertJobLocked()
         monitorJob = scope.launch {
             var failedAttempts = 0
             while (isActive) {
                 val sessionId = "monitor-${System.currentTimeMillis()}-$failedAttempts"
                 setMonitorScannerHealthy(false)
                 try {
-                    bleScanner.scan(
-                        sessionId = sessionId,
-                        sessionType = ScanSessionType.Monitor,
-                        targetAddresses = trackerIds,
-                        onScanHealthChanged = ::setMonitorScannerHealthy,
-                    ).collect { scanResult ->
-                        failedAttempts = 0
-                        val tracker = trackerRepository.upsertFromScan(scanResult, ScanSessionType.Monitor)
-                        publishObservation(tracker, scanResult.rssi, scanResult.seenAt, ScanSessionType.Monitor, scanResult.serviceUuids)
+                    scannerOwnershipMutex.withLock {
+                        bleScanner.scan(
+                            sessionId = sessionId,
+                            sessionType = ScanSessionType.Monitor,
+                            targetAddresses = trackerIds,
+                            onScanHealthChanged = ::setMonitorScannerHealthy,
+                        ).collect { scanResult ->
+                            failedAttempts = 0
+                            val tracker = trackerRepository.upsertFromScan(scanResult, ScanSessionType.Monitor)
+                            publishObservation(
+                                tracker,
+                                scanResult.rssi,
+                                scanResult.seenAt,
+                                ScanSessionType.Monitor,
+                                scanResult.serviceUuids,
+                            )
+                        }
                     }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
@@ -198,16 +297,45 @@ class DefaultTrackerMonitorCoordinator @Inject constructor(
         }
     }
 
+    private fun ensureAlertJobLocked() {
+        if (alertJob?.isActive == true) return
+        alertJob = scope.launch {
+            while (true) {
+                evaluateOutOfRangeAlerts()
+                delay(15_000L)
+            }
+        }
+    }
+
+    private fun scheduleMonitorResumeLocked() {
+        cancelPendingMonitorResumeLocked()
+        pendingMonitorResumeJob = scope.launch {
+            delay(MONITOR_RESUME_GRACE_MILLIS)
+            transitionMutex.withLock {
+                pendingMonitorResumeJob = null
+                syncMonitoredTrackersLocked()
+            }
+        }
+    }
+
+    private fun cancelPendingMonitorResumeLocked() {
+        pendingMonitorResumeJob?.cancel()
+        pendingMonitorResumeJob = null
+    }
+
     override suspend fun stopAll() {
-        setMonitorScannerHealthy(false)
-        _activeSearchTrackerId.value = null
-        _activeTrackerIds.value = emptySet()
-        searchJob?.cancel()
-        monitorJob?.cancel()
-        alertJob?.cancel()
-        searchJob = null
-        monitorJob = null
-        alertJob = null
+        transitionMutex.withLock {
+            cancelPendingMonitorResumeLocked()
+            setMonitorScannerHealthy(false)
+            _activeSearchTrackerId.value = null
+            _activeTrackerIds.value = emptySet()
+            searchJob?.cancelAndJoin()
+            monitorJob?.cancelAndJoin()
+            alertJob?.cancelAndJoin()
+            searchJob = null
+            monitorJob = null
+            alertJob = null
+        }
     }
 
     private suspend fun publishObservation(
@@ -342,7 +470,8 @@ class DefaultTrackerMonitorCoordinator @Inject constructor(
             }
         }
     }
-
 }
 
 private const val FAILED_DISPATCH_RETRY_MILLIS = 30_000L
+private const val MANUAL_PERSIST_INTERVAL_MILLIS = 5_000L
+private const val MONITOR_RESUME_GRACE_MILLIS = 750L

@@ -93,7 +93,7 @@ fun SettingsScreen(viewModel: SettingsViewModel) {
         item {
             SectionCard("Permissions") {
                 PermissionLine("BLE scan/connect", blePermissionsGranted)
-                PermissionLine("Location for last seen place", locationGranted)
+                PermissionLine("Precise location for complete BLE results", locationGranted)
                 PermissionLine("Notifications for out-of-range alerts", notificationsGranted)
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 12.dp)) {
                     Button(onClick = {
@@ -128,7 +128,7 @@ fun SettingsScreen(viewModel: SettingsViewModel) {
         }
         item {
             SectionCard("Privacy") {
-                Text("Tracker sightings, battery snapshots, and last known phone locations stay on-device in Room. There is no cloud backend in v1.")
+                Text("Tracker sightings, battery snapshots, and any legacy last-known phone locations stay on-device in Room. There is no cloud backend in v1.")
             }
         }
     }

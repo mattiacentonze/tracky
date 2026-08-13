@@ -37,7 +37,7 @@ Do not continue release verification if unit tests, lint, assembly, installation
 ## Emulator Smoke Test
 
 1. Confirm **Devices** is the first selected destination and `Find a device` is visible.
-2. Deny and then grant nearby-device permission; confirm the explanation and rescan controls behave correctly.
+2. Deny and then grant Nearby devices plus precise location permission; confirm the explanation and scan controls behave correctly.
 3. Open **Automations**:
    - with no saved device, confirm `Save a device first`;
    - with seeded/test data, open `New automation`;
@@ -51,30 +51,35 @@ An emulator result is not evidence that BLE distance, Finder trend, UWB directio
 ## Physical Device Setup
 
 1. Start with Bluetooth disabled and unlock the phone.
-2. Grant nearby-device permission, accept Android's Bluetooth enable dialog, and
+2. Grant Nearby devices plus precise location permission, accept Android's Bluetooth enable dialog, and
    confirm Tracky starts scanning without opening Settings. Deny it once as a
    separate case and confirm Tracky shows a retry button without a prompt loop.
-3. Grant notification permission. Grant location only if last-seen phone location is being tested.
-4. Keep the phone off battery saver for the baseline run; test restricted battery behavior separately.
-5. Wake the trackers and place them at known positions.
-6. Start with sound at a safe level and review Do Not Disturb/vibration settings.
+3. Leave the GPS/location service off; it must not change BLE visibility or RSSI,
+   and Tracky must not ask to turn it on.
+4. Grant notification permission.
+5. Keep the phone off battery saver for the baseline run; test restricted battery behavior separately.
+6. Wake the trackers and place them at known positions.
+7. Start with sound at a safe level and review Do Not Disturb/vibration settings.
 
 ## Devices And Naming
 
-1. Open **Devices** and rescan.
-2. Confirm Android-paired and Tracky-saved devices appear first under `YOUR DEVICES`,
-   including paired devices that are not currently broadcasting.
-3. Confirm remaining named broadcasts appear under `OTHER NAMED DEVICES`, and
+1. Open **Devices** and wait for the first five-second snapshot.
+2. With several paired/saved devices switched off or not advertising, confirm none
+   appears merely because it exists in Android or Tracky's database.
+3. Confirm a captured Android-paired broadcast appears first under `PAIRED DEVICES`.
+4. Confirm remaining captured named broadcasts appear under `OTHER NAMED DEVICES`, and
    broadcasts without a usable name appear under `UNNAMED DEVICES`.
-4. Switch between `Distance` and `Name`; confirm only the order inside each section
-   changes. For distance, live strongest signals lead and unavailable signals are last.
-5. Confirm a paired device with no current BLE broadcast says `No BLE signal` and
-   `Distance unavailable` rather than showing stored or fabricated proximity.
-6. Compare displayed addresses/names and RSSI updates with a trusted BLE scanner when possible.
-7. Save a device, assign a friendly name, leave the screen, and confirm the name remains after returning and after app restart.
-8. Stop the tracker's advertisements and confirm its card remains in `YOUR DEVICES` without a live distance.
-9. Confirm `Details` opens stored metadata and `Find` opens Finder for a saved or paired device.
-10. Confirm unknown or unsaved devices cannot accidentally open another device's Finder.
+5. Switch between `Distance` and `Name`; confirm only the order inside each section
+   changes and distance places the strongest RSSI first.
+6. Confirm visible values update no more than once per five seconds. Stop one
+   advertiser and confirm it disappears after at most two snapshots (ten seconds).
+7. Tap refresh repeatedly and confirm the list updates without Android error 6 or
+   multiple `scan_started` events in Diagnostics.
+8. Compare displayed addresses/names and RSSI with a trusted BLE scanner in a
+   separate run so the two apps do not compete for scanner resources.
+9. Save a device, assign a friendly name, leave the screen, and confirm the name remains after returning and after app restart, but the device is absent from Devices while not advertising.
+10. Confirm `Details` opens stored metadata and `Find` opens Finder only from a current captured row or another saved-device surface.
+11. Confirm unknown or unsaved devices cannot accidentally open another device's Finder.
 
 ## Finder
 
@@ -134,6 +139,8 @@ Create separate test rules for enter and leave. Use a large, unobstructed space 
 
 - CI-equivalent local tasks pass and the APK installs/launches.
 - Devices is the start destination and navigation is stable.
+- Devices contains only recent live broadcasts, refreshes every five seconds, and
+  starts one scanner per visible-screen session.
 - Finder is useful for closer/farther guidance without claiming direction or precise ranging.
 - Automations persist, resist boundary noise, and trigger at most once per confirmed crossing/cooldown window.
 - Wi-Fi and messaging actions always preserve explicit user confirmation.
