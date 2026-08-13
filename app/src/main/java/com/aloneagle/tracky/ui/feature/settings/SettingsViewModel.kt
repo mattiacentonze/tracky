@@ -128,7 +128,7 @@ fun SettingsScreen(viewModel: SettingsViewModel) {
         }
         item {
             SectionCard("Privacy") {
-                Text("Tracker sightings, battery snapshots, and last known phone locations stay on-device in Room. There is no cloud backend in v1.")
+                Text("Tracker sightings, battery snapshots, and any legacy last-known phone locations stay on-device in Room. There is no cloud backend in v1.")
             }
         }
     }
