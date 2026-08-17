@@ -43,15 +43,8 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
-      - name: Run unit tests, lint, and debug build
-        run: >-
-          ./gradlew
-          --no-daemon
-          --stacktrace
-          --continue
-          testDebugUnitTest
-          lintDebug
-          assembleDebug
+      - name: Run local-equivalent Android preflight
+        run: bash scripts/preflight-android.sh
 
       - name: Verify APK signature and write checksum
         shell: bash
