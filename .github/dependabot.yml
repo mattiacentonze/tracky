@@ -36,4 +36,11 @@ updates:
       preview-dependencies:
         patterns:
           - "*"
-    open-pull-requests-limit: 5
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
+    open-pull-requests-limit: 3
